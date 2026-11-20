@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: Go lint, unit + integration tests
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_USER: cargodesk
+          POSTGRES_PASSWORD: cargodesk
+          POSTGRES_DB: cargodesk_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cargodesk" --health-interval 2s --health-timeout 5s --health-retries 30
+    defaults:
+      run:
+        working-directory: api
+    env:
+      CARGODESK_TEST_DATABASE_URL: postgres://cargodesk:cargodesk@localhost:5432/cargodesk_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: Unit + integration tests (real PostgreSQL)
+        run: go test -count=1 -p 1 -race -v ./... 2>&1 | tee go-test.log
+      - name: Test count
+        run: echo "Passed Go tests (incl. subtests):" $(grep -cE '^\s*--- PASS' go-test.log)
+      - name: Scan seed and fixtures for PII/secret-shaped values
+        run: go run ./cmd/cargodesk scan internal/seed ../docs ../README.md
+
+  web:
+    name: Web lint, typecheck, audit + Playwright E2E
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_USER: cargodesk
+          POSTGRES_PASSWORD: cargodesk
+          POSTGRES_DB: cargodesk
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cargodesk" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      DATABASE_URL: postgres://cargodesk:cargodesk@localhost:5432/cargodesk?sslmode=disable
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build API
+        working-directory: api
+        run: go build -o bin/cargodesk ./cmd/cargodesk
+      - name: Install
+        working-directory: web
+        run: npm ci
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+      - name: npm audit (high/critical)
+        working-directory: web
+        run: npm audit --audit-level=high
+      - name: Build
+        working-directory: web
+        run: npm run build
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Playwright E2E
+        working-directory: web
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 7
+
+  compose:
+    name: Docker Compose demo smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        run: docker compose up -d --build --wait
+      - name: Smoke test through the UI origin
+        run: |
+          curl -fsS http://localhost:3000/login > /dev/null
+          curl -fsS http://localhost:3000/api/v1/auth/demo-users | grep -q "Ana Demo"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs
+      - run: docker compose down -v
