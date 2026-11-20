@@ -73,3 +73,16 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token_hash = $1`, HashToken(token))
 	return err
 }
+
+// ActorByUserID loads an actor without a session (seeding and tests).
+func (s *Store) ActorByUserID(ctx context.Context, userID string) (Actor, error) {
+	var a Actor
+	err := s.pool.QueryRow(ctx, `SELECT u.id, u.email, u.display_name, u.role, o.id, o.slug, o.name, o.timezone
+		FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`, userID).
+		Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &a.Org.ID, &a.Org.Slug, &a.Org.Name, &a.Org.Timezone)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Actor{}, ErrNotFound
+	}
+	a.Org.Loc = loadLoc(a.Org.Timezone)
+	return a, err
+}
