@@ -50,7 +50,7 @@ func phoneLike(m string) bool {
 
 var rules = []rule{
 	{"email", regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`), allowedEmail},
-	{"phone", regexp.MustCompile(`\+?\(?\d[\d\s().-]{7,}\d`), phoneLike},
+	{"phone", regexp.MustCompile(`(?:\+|\(|\b)\d[\d\s().-]{7,}\d\b`), phoneLike},
 	{"street_address", regexp.MustCompile(`(?i)\b\d{1,5}\s+(?:[A-Za-z]+\s){1,3}(?:street|st\.|avenue|ave\.?|road|rd\.|boulevard|blvd|lane|calle|avenida)\b`), nil},
 	{"aws_access_key", regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), nil},
 	{"github_token", regexp.MustCompile(`\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}\b`), nil},
