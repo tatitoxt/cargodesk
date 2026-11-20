@@ -1,0 +1,25 @@
+# Go
+/api/bin/
+*.test
+*.out
+coverage.*
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Env and local files
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
