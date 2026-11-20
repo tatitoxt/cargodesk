@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -281,6 +282,12 @@ func TestOverdueAndFilters(t *testing.T) {
 	}
 	if got := strings.Join(list("?due=today"), ","); got != "CD-1004,CD-1003" {
 		t.Fatalf("due today = %s", got)
+	}
+	if a, b := list("?q="+url.QueryEscape("cold store")), list("?q="+url.QueryEscape("clinic network")); len(a) != 1 || strings.Join(a, "") != strings.Join(b, "") {
+		t.Fatalf("search by origin/destination = %v / %v", a, b)
+	}
+	if got := len(list("?q=" + url.QueryEscape("Hidden Tenant"))); got != 0 {
+		t.Fatalf("cross-tenant search leaked %d rows", got)
 	}
 	if got := len(list("?q=%25")); got != 0 {
 		t.Fatalf("LIKE wildcard was not escaped: %d", got)

@@ -277,7 +277,7 @@ func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now ti
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := "%" + escapeLike(q) + "%"
 		p := arg(like)
-		where = append(where, "(s.reference ILIKE "+p+" OR s.account_name ILIKE "+p+")")
+		where = append(where, "(s.reference ILIKE "+p+" OR s.account_name ILIKE "+p+" OR s.origin ILIKE "+p+" OR s.destination ILIKE "+p+")")
 	}
 	limit := f.Limit
 	if limit <= 0 || limit > 500 {
