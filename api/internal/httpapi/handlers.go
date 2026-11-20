@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -363,16 +364,18 @@ func (s *Server) idempotent(scope string, next http.HandlerFunc) http.HandlerFun
 		a := actor(r)
 		fullScope := scope + " " + r.URL.Path
 		hash := store.RequestHash(fullScope, body)
-		prev, err := s.cfg.Store.LookupIdempotent(r.Context(), a, key, hash)
-		if errors.Is(err, store.ErrIdempotencyMismatch) {
+		prev, err := s.cfg.Store.ReserveIdempotent(r.Context(), a, key, fullScope, hash, s.now())
+		switch {
+		case errors.Is(err, store.ErrIdempotencyMismatch):
 			writeError(w, r, http.StatusUnprocessableEntity, "idempotency_key_reused", err.Error(), nil)
 			return
-		}
-		if err != nil {
+		case errors.Is(err, store.ErrIdempotencyInProgress):
+			writeError(w, r, http.StatusConflict, "idempotency_in_progress", err.Error(), nil)
+			return
+		case err != nil:
 			s.internal(w, r, err)
 			return
-		}
-		if prev != nil {
+		case prev != nil:
 			w.Header().Set("Idempotent-Replayed", "true")
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(prev.Status)
@@ -382,10 +385,16 @@ func (s *Server) idempotent(scope string, next http.HandlerFunc) http.HandlerFun
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		next(rec, r)
-		if rec.status < 500 && rec.status != http.StatusConflict {
-			if err := s.cfg.Store.SaveIdempotent(r.Context(), a, key, fullScope, hash, rec.status, rec.buf.Bytes(), s.now()); err != nil {
-				s.cfg.Logger.Error("save idempotency key", "correlation_id", correlationID(r), "error", err.Error())
-			}
+		// Only successes are replayed; failed requests free the key so a
+		// corrected retry with the same key can run.
+		ctx := context.WithoutCancel(r.Context())
+		if rec.status >= 200 && rec.status < 300 {
+			err = s.cfg.Store.CompleteIdempotent(ctx, a, key, rec.status, rec.buf.Bytes())
+		} else {
+			err = s.cfg.Store.ReleaseIdempotent(ctx, a, key)
+		}
+		if err != nil {
+			s.cfg.Logger.Error("finish idempotency key", "correlation_id", correlationID(r), "error", err.Error())
 		}
 	}
 }

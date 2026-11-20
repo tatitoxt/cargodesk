@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -384,12 +385,49 @@ func TestIdempotencyKey(t *testing.T) {
 	if r := other.do("POST", "/api/v1/shipments", createBody("Idem"), h); r.status != 201 || r.body["id"] == first.body["id"] {
 		t.Fatalf("other user: %d", r.status)
 	}
+	// A rejected request does not consume its key: the corrected retry runs.
+	fix := map[string]string{"Idempotency-Key": "fix-1"}
+	bad := createBody("Fixable")
+	bad["required_date"] = "not-a-date"
+	if r := c.do("POST", "/api/v1/shipments", bad, fix); r.status != 422 || r.body["error"] != "validation_failed" {
+		t.Fatalf("invalid create: %d %s", r.status, r.raw)
+	}
+	if r := c.do("POST", "/api/v1/shipments", createBody("Fixable"), fix); r.status != 201 || r.header.Get("Idempotent-Replayed") != "" {
+		t.Fatalf("corrected retry: %d %s", r.status, r.raw)
+	}
 	p := "/api/v1/shipments/" + first.body["id"].(string) + "/transitions"
 	th := map[string]string{"Idempotency-Key": "tr-1"}
 	body := map[string]any{"version": 1, "to": "needs_info", "reason": "double click"}
 	r1, r2 := c.do("POST", p, body, th), c.do("POST", p, body, th)
 	if r1.status != 200 || r2.status != 200 || ver(r2.body) != 2 {
 		t.Fatalf("transition replay: %d %d %s", r1.status, r2.status, r2.raw)
+	}
+}
+
+func TestConcurrentIdempotentCreatesMakeOneShipment(t *testing.T) {
+	e := newEnv(t, true)
+	c := e.login(seed.CoordinatorA)
+	h := map[string]string{"Idempotency-Key": "race-1"}
+	const n = 8
+	statuses := make(chan int, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			statuses <- c.do("POST", "/api/v1/shipments", createBody("Racer"), h).status
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	for st := range statuses {
+		if st != 201 && st != 409 {
+			t.Errorf("status %d, want 201 or 409", st)
+		}
+	}
+	items := c.mustOK(200, "GET", "/api/v1/shipments?q=Racer", nil)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("shipments created = %d, want 1", len(items))
 	}
 }
 

@@ -21,7 +21,8 @@ var (
 	// ErrClosed is returned when changing a shipment in a terminal state.
 	ErrClosed = errors.New("shipment is closed")
 	// ErrIdempotencyMismatch is returned when a key is reused with a different body.
-	ErrIdempotencyMismatch = errors.New("idempotency key reused with a different request")
+	ErrIdempotencyMismatch   = errors.New("idempotency key reused with a different request")
+	ErrIdempotencyInProgress = errors.New("a request with this idempotency key is still in progress")
 )
 
 // VersionConflictError means the client's version is stale.
