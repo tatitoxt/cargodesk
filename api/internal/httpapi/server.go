@@ -1,4 +1,4 @@
-// Package httpapi exposes the CargoDesk JSON API (see api/openapi.json).
+// Package httpapi exposes the CargoDesk JSON API (routes in routes()).
 package httpapi
 
 import (
