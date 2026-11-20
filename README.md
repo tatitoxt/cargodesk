@@ -1,3 +1,220 @@
 # CargoDesk
 
-Logistics operations desk: requests, quotes, assignment and delivery with an auditable timeline.
+[![CI](https://github.com/tatitoxt/cargodesk/actions/workflows/ci.yml/badge.svg)](https://github.com/tatitoxt/cargodesk/actions/workflows/ci.yml)
+
+Logistics operations desk: requests, quotes, assignment and delivery with an
+explicit state machine, owners, internal SLA tracking and an auditable timeline.
+
+> **Portfolio / demo project.** All organizations, people, accounts and places
+> in this repository are synthetic. It has not been used in production or
+> validated with real operators; the workflow assumptions are listed in
+> [`docs/spec/operations-workflow.md`](docs/spec/operations-workflow.md).
+
+## Problem
+
+A small logistics operation coordinates requests, quotes, assignment and
+delivery across spreadsheets, chat threads and people's memory. When a request
+comes in, nobody can say at a glance **who owns it, what is missing to quote or
+dispatch it, and what the next commitment is**. CargoDesk is a single desk where
+each request has one state, one owner, one next action and a timeline that
+explains how it got there.
+
+## What it does today
+
+- **Requests**: create a shipment request (synthetic account/contact, origin,
+  destination, cargo type, required date, priority, notes).
+- **Explicit state machine** — no free-form status edits, only transition commands:
+
+  ```text
+  new → needs_info → quoted → accepted → scheduled → in_transit → delivered
+  (needs_info ↔ new, quoted → needs_info, and cancelled / lost as terminal alternatives)
+  ```
+
+  Each transition has requirements enforced by the API: a reason for
+  `needs_info`/`cancelled`/`lost`, an amount and ISO currency for `quoted`, an
+  open quote for `accepted`, pickup time and carrier for `scheduled`, and
+  delivery evidence (received by, delivered at — not in the future) for `delivered`.
+- **Ownership and next action**: owner, priority and next-action date/note per request.
+- **Internal SLA**: per-priority "time to quote" policy (defaults: urgent 2h,
+  high 8h, normal 24h, low 72h; admins can change it). Status is shown as
+  on track / at risk (last 2h) / breached / met / missed.
+- **Auditable timeline**: every change writes an append-only event (actor,
+  action, from/to state, reason, change data, timestamp, correlation ID) in the same
+  transaction as the change. PostgreSQL triggers reject `UPDATE`/`DELETE`/`TRUNCATE` on events.
+- **Notes and exceptions**: free-text notes (rendered as text, never HTML) and
+  exceptions with kind, reason and resolution.
+- **Board and filters**: state, owner (incl. unassigned), overdue, due today
+  (in the organization's timezone) and text search; filters live in the URL.
+- **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
+- **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
+- **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
+- **Optimistic concurrency**: mutations carry a `version`; stale writes get `409`
+  and the UI offers to reload.
+- **Idempotency**: `Idempotency-Key` on create and transitions replays the first response.
+- **Synthetic seed** built through the same store code paths, so seeded
+  timelines are real events.
+
+Not in the MVP (by design): WhatsApp/email, maps/GPS, billing, customer portal,
+document storage, AI.
+
+## Quickstart (Docker Compose demo)
+
+Requires Docker with Compose v2.
+
+```bash
+git clone https://github.com/tatitoxt/cargodesk.git
+cd cargodesk
+docker compose up --build --wait
+```
+
+Open <http://localhost:3000> and pick a demo user:
+
+| User | Role | Organization |
+|---|---|---|
+| Ana Demo | coordinator | Demo Freight Co. (synthetic) |
+| Bruno Sample | coordinator | Demo Freight Co. (synthetic) |
+| Carla Admin | admin | Demo Freight Co. (synthetic) |
+| Dario Viewer | viewer | Demo Freight Co. (synthetic) |
+| Erin Other-Tenant | coordinator | Sample Haulage Ltd. (synthetic) |
+
+Demo sign-in is a user picker (enabled with `DEMO_AUTH=true`, which the compose
+file sets); there are no passwords. Ports are bound to `127.0.0.1` only.
+
+Things to try: filter **Overdue only**, open `CD-1002` and move it to *Needs info*
+and back, take a new request all the way to *Delivered* and read its timeline,
+sign in as Dario Viewer to see read-only mode, or as Erin to see tenant isolation.
+
+Stop and remove data: `docker compose down -v`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  B[Browser] -->|"pages + /api/v1/* (same origin)"| W["Next.js UI (web/)"]
+  W -->|"rewrite /api/v1/*"| A["Go HTTP API (api/)"]
+  subgraph A2 [Go modular monolith]
+    A --> H[httpapi: auth, RBAC, correlation IDs, idempotency]
+    H --> WF[workflow: state machine + requirements]
+    H --> SL[sla: due dates, status, timezone]
+    H --> CSV[csvexport]
+    H --> ST[store: tenant-scoped SQL, transactional audit]
+  end
+  ST --> PG[(PostgreSQL)]
+```
+
+- `web/` — Next.js 15 + TypeScript client. Its only server-side role is a
+  same-origin proxy so the session cookie stays first-party (no CORS).
+- `api/` — Go 1.26 binary (`cargodesk serve|migrate|seed|scan`) using `net/http`
+  and `pgx`. Business rules live here; the UI never decides transitions.
+- PostgreSQL 17 — embedded SQL migrations, composite tenant foreign keys,
+  append-only event triggers.
+
+Design decisions: [`docs/adr/`](docs/adr). API reference: [`docs/api.md`](docs/api.md).
+
+## Running tests
+
+Prerequisites: Go 1.26, Node 22, Docker (for PostgreSQL).
+
+```bash
+# PostgreSQL for integration and E2E tests
+docker run -d --name cargodesk-test-pg -p 5432:5432 \
+  -e POSTGRES_USER=cargodesk -e POSTGRES_PASSWORD=cargodesk -e POSTGRES_DB=cargodesk_test \
+  postgres:17.6-alpine
+export CARGODESK_TEST_DATABASE_URL='postgres://cargodesk:cargodesk@localhost:5432/cargodesk_test?sslmode=disable'
+
+# Go: unit tests + integration tests against the real database
+cd api
+gofmt -l . && go vet ./...
+go test -count=1 -p 1 ./...
+cd ..
+```
+
+Integration tests reset the schema of the database they are given; never point
+`CARGODESK_TEST_DATABASE_URL` at data you care about. Without it, integration
+tests are skipped locally (and fail in CI).
+
+### End-to-end (Playwright)
+
+The E2E suite starts the real Go API and the production Next.js build, reseeds
+the database with `cargodesk seed -reset`, and drives Chromium:
+
+```bash
+cd api && go build -o bin/cargodesk ./cmd/cargodesk && cd ..
+cd web
+npm ci
+npx playwright install --with-deps chromium
+npm run lint && npm run typecheck && npm run build
+DATABASE_URL="$CARGODESK_TEST_DATABASE_URL" npm run e2e
+```
+
+To run the same specs against the compose demo instead (fresh volume):
+`E2E_EXTERNAL=1 E2E_SKIP_SEED=1 npm run e2e`.
+
+E2E specs (`web/e2e/`):
+
+- Main operator flow: create → assign owner → quote → accept → schedule → in
+  transit → deliver with evidence → inspect the 7-event timeline → refresh → filter board.
+- Recovery: overdue/owner/search filters (persisted across refresh), invalid
+  quote currency surfaced as a field error, `needs_info` → `new` with reasons,
+  XSS payload in a note rendered as text.
+- Concurrent edit in two browser sessions → `409` conflict → reload.
+- Viewer read-only UI and API `403`; tenant isolation; admin SLA change.
+- CSV export with formula escaping.
+
+### Measured results (this repository, reproducible with the commands above)
+
+- Go: 53 top-level tests and 92 subtests pass across 7 packages
+  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 145), including real-PostgreSQL
+  integration tests in `internal/store` and `internal/httpapi`.
+- Playwright: 6 E2E tests pass in Chromium.
+
+### CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull
+request and push to `main`:
+
+- **api**: `gofmt`, `go vet`, `staticcheck`, `govulncheck`, `go test -race`
+  against a PostgreSQL service, and a PII/secret-shaped-value scan of the seed and docs.
+- **web**: `npm ci`, ESLint, `tsc --noEmit`, `npm audit --audit-level=high`,
+  `next build`, Playwright E2E against the real API and PostgreSQL.
+- **compose**: builds and starts the Docker Compose demo and checks it over HTTP.
+
+## Configuration
+
+| Variable | Used by | Default | Purpose |
+|---|---|---|---|
+| `DATABASE_URL` | api | – | PostgreSQL connection string. |
+| `ADDR` | api | `:8080` | Listen address. |
+| `DEMO_AUTH` | api | `false` | Enables the seeded demo-user sign-in. |
+| `SECURE_COOKIE` | api | `false` | Sets `Secure` on the session cookie (use behind HTTPS). |
+| `API_URL` | web (build time) | `http://localhost:8080` | Where the Next.js proxy forwards `/api/v1/*`. |
+| `CARGODESK_TEST_DATABASE_URL` | Go tests | – | Disposable database for integration tests. |
+
+No external API keys are used or required.
+
+## Limitations
+
+- **Demo authentication only.** Sign-in is a seeded user picker; there is no
+  password, OIDC or SSO. Do not expose the demo to the internet.
+- **Not validated with real users.** The workflow, SLA defaults and fields are
+  assumptions from the spec, not findings from operators.
+- One currency per quote and no pricing logic; quotes are entered manually.
+- One timezone per organization; no business-hours SLA calendar.
+- Delivery "evidence" is a text record (received by, time, note); no file uploads.
+- No notifications (email/WhatsApp), no maps/GPS, no customer portal.
+- Organizations and users are created by the seed only; there is no admin UI for them.
+- No pagination on the board (the API returns at most 200 rows per query).
+- No load testing or security audit has been performed.
+
+## Roadmap
+
+1. Real authentication (OIDC) with the existing role model.
+2. Organization and user management for admins.
+3. Pagination and saved views on the board.
+4. Business-hours SLA calendars and SLA for later stages (e.g. time to schedule).
+5. Notifications for breached SLAs and due next actions.
+6. Attachments for delivery evidence with retention rules.
+
+## License
+
+[MIT](LICENSE) © Fausto Pastura
