@@ -133,7 +133,7 @@ function Detail({ id }: { id: string }) {
           {canEdit && (
             <NotePanel onSubmit={(text) => mutate(() => api(`/shipments/${id}/events`, { method: "POST", body: { kind: "note", body: text } }))} />
           )}
-          <ExceptionsPanel sh={sh} users={users} canEdit={canEdit && sh.allowed_transitions.length > 0} tz={tz}
+          <ExceptionsPanel sh={sh} users={users} canOpen={canEdit && sh.allowed_transitions.length > 0} canResolve={canEdit} tz={tz}
             onOpen={(body) => mutate(() => api(`/shipments/${id}/events`, { method: "POST", body: { ...body, kind: "exception", version: sh.version } }))}
             onResolve={(exId, resolution) => mutate(() => api(`/shipments/${id}/events`,
               { method: "POST", body: { kind: "exception_resolved", exception_id: exId, resolution } }))} />
@@ -284,8 +284,8 @@ function NotePanel({ onSubmit }: { onSubmit: (text: string) => Promise<boolean> 
   );
 }
 
-function ExceptionsPanel({ sh, users, canEdit, tz, onOpen, onResolve }: {
-  sh: ShipmentDetail; users: User[]; canEdit: boolean; tz: string;
+function ExceptionsPanel({ sh, users, canOpen, canResolve, tz, onOpen, onResolve }: {
+  sh: ShipmentDetail; users: User[]; canOpen: boolean; canResolve: boolean; tz: string;
   onOpen: (b: Body) => Promise<boolean>; onResolve: (id: string, resolution: string) => Promise<boolean>;
 }) {
   async function open(e: React.FormEvent<HTMLFormElement>) {
@@ -304,7 +304,7 @@ function ExceptionsPanel({ sh, users, canEdit, tz, onOpen, onResolve }: {
         {sh.exceptions.map((x) => (
           <li key={x.id} data-testid="exception">
             <strong>{x.kind}</strong>: {x.reason} · follow up {formatDateTime(x.follow_up_at, tz)}
-            {x.resolved_at ? <span className="success"> · resolved: {x.resolution}</span> : canEdit && (
+            {x.resolved_at ? <span className="success"> · resolved: {x.resolution}</span> : canResolve && (
               <form className="row" onSubmit={async (e) => {
                 e.preventDefault();
                 await onResolve(x.id, String(new FormData(e.currentTarget).get("resolution") ?? "").trim());
@@ -316,7 +316,7 @@ function ExceptionsPanel({ sh, users, canEdit, tz, onOpen, onResolve }: {
           </li>
         ))}
       </ul>
-      {canEdit && (
+      {canOpen && (
         <form className="form" onSubmit={open} aria-label="Open exception">
           <label>
             Kind
