@@ -83,6 +83,15 @@ test("a stale version is rejected with a conflict and can be reloaded", async ({
   await expect(b.getByTestId("priority")).toHaveText("normal");
 });
 
+test("sign-in ignores off-site redirect targets", async ({ page }) => {
+  for (const next of ["//evil.example", "/\\evil.example", "https://evil.example"]) {
+    await page.goto(`/login?next=${encodeURIComponent(next)}`);
+    await page.getByRole("button", { name: "Sign in as Ana Demo" }).click();
+    await expect(page.getByRole("heading", { name: "Requests" })).toBeVisible();
+    expect(page.url()).not.toContain("evil.example");
+  }
+});
+
 test("viewer can read but not change anything", async ({ page }) => {
   await signIn(page, "Dario Viewer");
   await expect(page.getByRole("link", { name: "New request" })).toHaveCount(0);

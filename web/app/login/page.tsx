@@ -5,6 +5,17 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, type DemoUser } from "@/lib/api";
 import { ErrorBox } from "@/components/FieldErrors";
 
+// Only same-origin paths are allowed as post-login redirects.
+function safeNext(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return "/";
+  try {
+    const u = new URL(next, window.location.origin);
+    return u.origin === window.location.origin ? u.pathname + u.search + u.hash : "/";
+  } catch {
+    return "/";
+  }
+}
+
 function Login() {
   const [users, setUsers] = useState<DemoUser[]>([]);
   const [error, setError] = useState<unknown>(null);
@@ -18,7 +29,7 @@ function Login() {
   async function signIn(id: string) {
     try {
       await api("/auth/demo-login", { method: "POST", body: { user_id: id } });
-      router.replace(next && next.startsWith("/") && !next.startsWith("//") ? next : "/");
+      router.replace(safeNext(next));
     } catch (e) {
       setError(e);
     }
