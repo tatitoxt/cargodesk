@@ -1,0 +1,139 @@
+package sla
+
+import (
+	"testing"
+	"time"
+
+	"github.com/tatitoxt/cargodesk/api/internal/workflow"
+)
+
+var now = time.Date(2026, 3, 11, 2, 30, 0, 0, time.UTC) // 2026-03-10 23:30 in Buenos Aires
+
+func ptr(t time.Time) *time.Time { return &t }
+
+func mustLoc(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
+}
+
+func TestDueAtUsesPolicyHours(t *testing.T) {
+	created := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	p := DefaultPolicy()
+	if got := DueAt(created, Urgent, p); !got.Equal(created.Add(2 * time.Hour)) {
+		t.Fatalf("urgent due = %v", got)
+	}
+	p[Normal] = 36
+	if got := DueAt(created, Normal, p); !got.Equal(created.Add(36 * time.Hour)) {
+		t.Fatalf("normal due = %v", got)
+	}
+}
+
+func TestPolicyValidate(t *testing.T) {
+	if err := DefaultPolicy().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	bad := []Policy{
+		{Low: 72, Normal: 24, High: 8},
+		{Low: 72, Normal: 0, High: 8, Urgent: 2},
+		{Low: 72, Normal: 24, High: 8, Urgent: maxHours + 1},
+		{Low: 72, Normal: 24, High: 8, Urgent: 2, "critical": 1},
+	}
+	for i, p := range bad {
+		if p.Validate() == nil {
+			t.Errorf("case %d: want error", i)
+		}
+	}
+}
+
+func TestStatusOf(t *testing.T) {
+	due := now.Add(time.Hour)
+	cases := []struct {
+		name   string
+		state  workflow.State
+		due    time.Time
+		quoted *time.Time
+		want   Status
+	}{
+		{"on track", workflow.New, now.Add(5 * time.Hour), nil, OnTrack},
+		{"at risk inside 2h", workflow.NeedsInfo, due, nil, AtRisk},
+		{"breached at due instant", workflow.New, now, nil, Breached},
+		{"met", workflow.Quoted, due, ptr(now), Met},
+		{"missed", workflow.Accepted, now.Add(-time.Hour), ptr(now), Missed},
+		{"cancelled before quote", workflow.Cancelled, now.Add(-time.Hour), nil, NotApplied},
+	}
+	for _, c := range cases {
+		if got := StatusOf(c.state, c.due, c.quoted, now); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+func TestOverdue(t *testing.T) {
+	past, future := now.Add(-time.Minute), now.Add(time.Hour)
+	cases := []struct {
+		name  string
+		state workflow.State
+		next  *time.Time
+		due   time.Time
+		want  bool
+	}{
+		{"next action passed", workflow.Scheduled, &past, future, true},
+		{"next action exactly now", workflow.Quoted, ptr(now), future, true},
+		{"next action in future, sla ok", workflow.New, &future, future, false},
+		{"sla breached while awaiting quote", workflow.NeedsInfo, nil, past, true},
+		{"sla breach ignored after quote", workflow.Quoted, nil, past, false},
+		{"terminal never overdue", workflow.Delivered, &past, past, false},
+		{"cancelled never overdue", workflow.Cancelled, &past, past, false},
+	}
+	for _, c := range cases {
+		if got := Overdue(c.state, c.next, c.due, now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDueTodayDependsOnTimezone(t *testing.T) {
+	ba := mustLoc(t, "America/Argentina/Buenos_Aires")
+	// 22:00 on 2026-03-10 in Buenos Aires, 01:00 on 2026-03-11 in UTC.
+	next := time.Date(2026, 3, 11, 1, 0, 0, 0, time.UTC)
+	if !DueToday(&next, now, ba) {
+		t.Error("should be due today in Buenos Aires")
+	}
+	morning := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
+	if DueToday(&morning, now, time.UTC) {
+		t.Error("2026-03-10 is yesterday in UTC")
+	}
+	if !DueToday(&morning, now, ba) {
+		t.Error("2026-03-10 07:00 local is today in Buenos Aires")
+	}
+	if DueToday(nil, now, ba) {
+		t.Error("nil is never due")
+	}
+}
+
+func TestDayBoundsAcrossDST(t *testing.T) {
+	ny := mustLoc(t, "America/New_York")
+	// 2026-03-08 is the US spring-forward day: 23 hours long.
+	start, end := DayBounds(time.Date(2026, 3, 8, 15, 0, 0, 0, time.UTC), ny)
+	if end.Sub(start) != 23*time.Hour {
+		t.Fatalf("DST day length = %v", end.Sub(start))
+	}
+	if start != time.Date(2026, 3, 8, 5, 0, 0, 0, time.UTC) {
+		t.Fatalf("start = %v", start)
+	}
+}
+
+func TestPriorityValid(t *testing.T) {
+	for _, p := range Priorities {
+		if !p.Valid() {
+			t.Errorf("%s should be valid", p)
+		}
+	}
+	if Priority("critical").Valid() {
+		t.Error("critical is not a priority")
+	}
+}
