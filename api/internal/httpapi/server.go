@@ -169,12 +169,6 @@ func (s *Server) editor(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
-type errorBody struct {
-	Error         string `json:"error"`
-	Message       string `json:"message"`
-	CorrelationID string `json:"correlation_id"`
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

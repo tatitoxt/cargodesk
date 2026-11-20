@@ -86,11 +86,6 @@ func (s *Store) tx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, s.pool, fn)
 }
 
-func isUniqueViolation(err error) bool {
-	var pe *pgconn.PgError
-	return errors.As(err, &pe) && pe.Code == "23505"
-}
-
 // SLAPolicy returns the organization's policy, falling back to defaults for
 // priorities without a row.
 func (s *Store) SLAPolicy(ctx context.Context, a Actor) (sla.Policy, error) {
