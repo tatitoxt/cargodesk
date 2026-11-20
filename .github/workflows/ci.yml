@@ -41,6 +41,7 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Unit + integration tests (real PostgreSQL)
+        shell: bash  # bash -eo pipefail, so a failing go test fails the step despite tee
         run: go test -count=1 -p 1 -race -v ./... 2>&1 | tee go-test.log
       - name: Test count
         run: echo "Passed Go tests (incl. subtests):" $(grep -cE '^\s*--- PASS' go-test.log)
