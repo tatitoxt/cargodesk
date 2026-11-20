@@ -1,0 +1,9 @@
+{
+  "account": "Northwind Demo Freight (fictitious)",
+  "email": "coordinator@cargodesk.example",
+  "alt": "ops@example.com",
+  "phone": "555-0142",
+  "origin": "Warehouse 4, Example Port (fictitious)",
+  "required_in_days": 3,
+  "amount_cents": 125000
+}
