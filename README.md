@@ -31,7 +31,7 @@ explains how it got there.
   ```
 
   Each transition has requirements enforced by the API: a reason for
-  `needs_info`/`cancelled`/`lost`, an amount and ISO currency for `quoted`, an
+  `needs_info`/`cancelled`/`lost`, an amount and a three-letter uppercase currency code (format only, not checked against the ISO 4217 list) for `quoted`, an
   open quote for `accepted`, pickup time and carrier for `scheduled`, and
   delivery evidence (received by, delivered at — not in the future) for `delivered`.
 - **Ownership and next action**: owner, priority and next-action date/note per request.
@@ -158,15 +158,15 @@ E2E specs (`web/e2e/`):
   quote currency surfaced as a field error, `needs_info` → `new` with reasons,
   XSS payload in a note rendered as text.
 - Concurrent edit in two browser sessions → `409` conflict → reload.
-- Viewer read-only UI and API `403`; tenant isolation; admin SLA change.
+- Viewer read-only UI and API `403`; tenant isolation; admin SLA change; off-site post-login redirects ignored.
 - CSV export with formula escaping.
 
 ### Measured results (this repository, reproducible with the commands above)
 
-- Go: 53 top-level tests and 92 subtests pass across 7 packages
-  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 145), including real-PostgreSQL
+- Go: 55 top-level tests and 92 subtests pass across 7 packages
+  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 147), including real-PostgreSQL
   integration tests in `internal/store` and `internal/httpapi`.
-- Playwright: 6 E2E tests pass in Chromium.
+- Playwright: 7 E2E tests pass in Chromium.
 
 ### CI
 

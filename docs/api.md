@@ -29,7 +29,10 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 
 Mutations require `Content-Type: application/json` (`415` otherwise) and
 bodies over 64 KiB are rejected with `413`. Reusing an `Idempotency-Key`
-with a different body returns `422`.
+with a different body returns `422`; a retry while the first request is still
+running returns `409 idempotency_in_progress`. Only successful (2xx) responses
+are replayed, so a request rejected with a 4xx can be corrected and retried
+with the same key.
 
 Exact request/response shapes are defined in `api/internal/httpapi/handlers.go`
 and exercised in `api/internal/httpapi/api_integration_test.go`.
