@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -145,6 +146,17 @@ func TestReasonLengthLimit(t *testing.T) {
 		long[i] = 'x'
 	}
 	got := fieldsOf(t, Validate(New, TransitionInput{To: Cancelled, Reason: string(long)}, Facts{Now: now}))
+	if !slices.Equal(got, []string{"reason"}) {
+		t.Fatalf("fields = %v", got)
+	}
+}
+
+func TestLengthLimitsCountCharactersNotBytes(t *testing.T) {
+	accented := strings.Repeat("é", maxTextLen) // 1000 bytes, 500 characters
+	if err := Validate(New, TransitionInput{To: Cancelled, Reason: accented}, Facts{Now: now}); err != nil {
+		t.Fatalf("500-character reason rejected: %v", err)
+	}
+	got := fieldsOf(t, Validate(New, TransitionInput{To: Cancelled, Reason: accented + "é"}, Facts{Now: now}))
 	if !slices.Equal(got, []string{"reason"}) {
 		t.Fatalf("fields = %v", got)
 	}

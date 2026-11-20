@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type State string
@@ -127,7 +128,7 @@ func Validate(from State, in TransitionInput, f Facts) error {
 			add("reason", msg)
 		}
 	}
-	if len(in.Reason) > maxTextLen {
+	if utf8.RuneCountInString(in.Reason) > maxTextLen {
 		add("reason", fmt.Sprintf("must be at most %d characters", maxTextLen))
 	}
 
@@ -164,7 +165,7 @@ func Validate(from State, in TransitionInput, f Facts) error {
 		}
 		if strings.TrimSpace(in.Carrier) == "" {
 			add("carrier", "carrier is required")
-		} else if len(in.Carrier) > 120 {
+		} else if utf8.RuneCountInString(in.Carrier) > 120 {
 			add("carrier", "must be at most 120 characters")
 		}
 	case Delivered:
@@ -180,7 +181,7 @@ func Validate(from State, in TransitionInput, f Facts) error {
 			} else if in.Evidence.DeliveredAt.After(f.Now.Add(5 * time.Minute)) {
 				add("evidence.delivered_at", "cannot be in the future")
 			}
-			if len(in.Evidence.Note) > maxTextLen {
+			if utf8.RuneCountInString(in.Evidence.Note) > maxTextLen {
 				add("evidence.note", fmt.Sprintf("must be at most %d characters", maxTextLen))
 			}
 		}
