@@ -1,0 +1,7 @@
+{
+  "_comment": "Deliberately forbidden fixture used only by piiscan tests. Values are made up.",
+  "contact": "maria.gomez@gmail.com",
+  "phone": "+54 9 11 4321-8765",
+  "address": "1234 Corrientes Avenue",
+  "password": "hunter2hunter2"
+}
