@@ -73,3 +73,9 @@ func TestPrivateKeyHeader(t *testing.T) {
 		t.Fatalf("findings = %+v", fs)
 	}
 }
+
+func TestUUIDsAreNotPhones(t *testing.T) {
+	if f := Scan("x", []byte(`{"id":"00000000-0000-4000-b000-000000000001"}`)); len(f) != 0 {
+		t.Fatalf("findings: %+v", f)
+	}
+}

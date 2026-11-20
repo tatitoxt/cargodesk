@@ -59,13 +59,16 @@ var rules = []rule{
 	{"password_assignment", regexp.MustCompile(`(?i)"?(?:password|passwd|secret)"?\s*[:=]\s*"[^"]{6,}"`), nil},
 }
 
+var uuidRe = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+
 // Scan returns findings for content; file is only used for reporting.
 func Scan(file string, content []byte) []Finding {
 	var out []Finding
 	sc := bufio.NewScanner(bytes.NewReader(content))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for n := 1; sc.Scan(); n++ {
-		line := sc.Text()
+		// UUIDs are identifiers, not phone numbers.
+		line := uuidRe.ReplaceAllString(sc.Text(), "<uuid>")
 		for _, r := range rules {
 			for _, m := range r.re.FindAllString(line, -1) {
 				if r.allow != nil && r.allow(m) {
