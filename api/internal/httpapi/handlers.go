@@ -389,9 +389,9 @@ func (s *Server) idempotent(scope string, next http.HandlerFunc) http.HandlerFun
 		// corrected retry with the same key can run.
 		ctx := context.WithoutCancel(r.Context())
 		if rec.status >= 200 && rec.status < 300 {
-			err = s.cfg.Store.CompleteIdempotent(ctx, a, key, rec.status, rec.buf.Bytes())
+			err = s.cfg.Store.CompleteIdempotent(ctx, a, key, hash, rec.status, rec.buf.Bytes())
 		} else {
-			err = s.cfg.Store.ReleaseIdempotent(ctx, a, key)
+			err = s.cfg.Store.ReleaseIdempotent(ctx, a, key, hash)
 		}
 		if err != nil {
 			s.cfg.Logger.Error("finish idempotency key", "correlation_id", correlationID(r), "error", err.Error())

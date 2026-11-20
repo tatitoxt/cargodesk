@@ -302,3 +302,29 @@ func TestSeedDataIsSynthetic(t *testing.T) {
 		t.Fatalf("seed data findings: %+v", f)
 	}
 }
+
+func TestStaleIdempotencyReservationCannotOverwriteReplacement(t *testing.T) {
+	st, a, _ := setup(t)
+	oldHash, newHash := store.RequestHash("s", []byte("old")), store.RequestHash("s", []byte("new"))
+	if prev, err := st.ReserveIdempotent(ctx, a, "k-stale", "s", oldHash, testdb.Now); prev != nil || err != nil {
+		t.Fatalf("reserve old: %v %v", prev, err)
+	}
+	later := testdb.Now.Add(2 * time.Minute)
+	if prev, err := st.ReserveIdempotent(ctx, a, "k-stale", "s", newHash, later); prev != nil || err != nil {
+		t.Fatalf("reserve replacement: %v %v", prev, err)
+	}
+	// The original request finishes late; it must not touch the replacement.
+	if err := st.CompleteIdempotent(ctx, a, "k-stale", oldHash, 201, []byte(`{"id":"old"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReserveIdempotent(ctx, a, "k-stale", "s", newHash, later); !errors.Is(err, store.ErrIdempotencyInProgress) {
+		t.Fatalf("replacement should still be pending, got %v", err)
+	}
+	if err := st.CompleteIdempotent(ctx, a, "k-stale", newHash, 201, []byte(`{"id":"new"}`)); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := st.ReserveIdempotent(ctx, a, "k-stale", "s", newHash, later)
+	if err != nil || prev == nil || string(prev.Body) != `{"id": "new"}` {
+		t.Fatalf("replay = %v %v", prev, err)
+	}
+}

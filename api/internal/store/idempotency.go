@@ -67,18 +67,21 @@ func (s *Store) ReserveIdempotent(ctx context.Context, a Actor, key, scope strin
 	return &r, nil
 }
 
-// CompleteIdempotent stores the response for a reserved key.
-func (s *Store) CompleteIdempotent(ctx context.Context, a Actor, key string, status int, body []byte) error {
+// CompleteIdempotent stores the response for a reserved key. Matching on
+// hash keeps a request that outlived its reservation from overwriting a
+// replacement reservation for a different body.
+func (s *Store) CompleteIdempotent(ctx context.Context, a Actor, key string, hash []byte, status int, body []byte) error {
 	_, err := s.pool.Exec(ctx, `UPDATE idempotency_keys SET status_code = $4, response = $5
-		WHERE organization_id = $1 AND user_id = $2 AND key = $3 AND status_code = $6`,
-		a.Org.ID, a.UserID, key, status, body, pendingStatus)
+		WHERE organization_id = $1 AND user_id = $2 AND key = $3 AND status_code = $6 AND request_hash = $7`,
+		a.Org.ID, a.UserID, key, status, body, pendingStatus, hash)
 	return err
 }
 
 // ReleaseIdempotent frees a reserved key whose request did not succeed, so
 // the client can retry it (possibly with a corrected body).
-func (s *Store) ReleaseIdempotent(ctx context.Context, a Actor, key string) error {
+func (s *Store) ReleaseIdempotent(ctx context.Context, a Actor, key string, hash []byte) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM idempotency_keys
-		WHERE organization_id = $1 AND user_id = $2 AND key = $3 AND status_code = $4`, a.Org.ID, a.UserID, key, pendingStatus)
+		WHERE organization_id = $1 AND user_id = $2 AND key = $3 AND status_code = $4 AND request_hash = $5`,
+		a.Org.ID, a.UserID, key, pendingStatus, hash)
 	return err
 }
