@@ -522,7 +522,7 @@ func (s *Server) handleDeleteBusinessHours(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
-	url, hasSecret, err := s.cfg.Store.Webhook(r.Context(), a)
+	url, events, hasSecret, err := s.cfg.Store.Webhook(r.Context(), a)
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -533,7 +533,7 @@ func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"url": url, "has_secret": hasSecret, "deliveries": deliveries,
+		"url": url, "events": events, "has_secret": hasSecret, "deliveries": deliveries,
 	})
 }
 
@@ -544,8 +544,9 @@ func (s *Server) handlePutWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		URL    string `json:"url"`
-		Secret string `json:"secret"`
+		URL    string   `json:"url"`
+		Secret string   `json:"secret"`
+		Events []string `json:"events"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -561,11 +562,22 @@ func (s *Server) handlePutWebhook(w http.ResponseWriter, r *http.Request) {
 			"webhook URL must use https", map[string]any{"url": "https_required"})
 		return
 	}
-	if err := s.cfg.Store.SetWebhook(r.Context(), a, in.URL, in.Secret); err != nil {
+	valid := map[string]bool{}
+	for _, action := range store.WebhookActions {
+		valid[action] = true
+	}
+	for _, action := range in.Events {
+		if !valid[action] {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+				"events must be shipment event actions", map[string]any{"events": action})
+			return
+		}
+	}
+	if err := s.cfg.Store.SetWebhook(r.Context(), a, in.URL, in.Secret, in.Events); err != nil {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": in.URL, "has_secret": in.Secret != ""})
+	writeJSON(w, http.StatusOK, map[string]any{"url": in.URL, "events": in.Events, "has_secret": in.Secret != ""})
 }
 
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
@@ -574,7 +586,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the webhook", nil)
 		return
 	}
-	if err := s.cfg.Store.SetWebhook(r.Context(), a, "", ""); err != nil {
+	if err := s.cfg.Store.SetWebhook(r.Context(), a, "", "", nil); err != nil {
 		s.internal(w, r, err)
 		return
 	}
@@ -587,7 +599,7 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can test the webhook", nil)
 		return
 	}
-	url, _, err := s.cfg.Store.Webhook(r.Context(), a)
+	url, _, _, err := s.cfg.Store.Webhook(r.Context(), a)
 	if err != nil {
 		s.internal(w, r, err)
 		return

@@ -734,7 +734,7 @@ func TestWebhookNotifications(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetWebhook(t.Context(), actor, receiver.URL, "s3cr3t"); err != nil {
+	if err := st.SetWebhook(t.Context(), actor, receiver.URL, "s3cr3t", nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -863,5 +863,90 @@ func TestAttachments(t *testing.T) {
 	list = coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/attachments", nil)
 	if len(list["attachments"].([]any)) != 0 {
 		t.Fatalf("post-delete list: %v", list)
+	}
+}
+
+// Webhook event filtering: a subscription limited to selected actions only
+// enqueues deliveries for those actions; an empty/absent list means all.
+func TestWebhookEventFilter(t *testing.T) {
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	coord := e.login(seed.CoordinatorA)
+
+	st := store.New(e.pool)
+	actor, err := st.ActorByUserID(t.Context(), seed.AdminA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Unknown action names are rejected.
+	if r := admin.do("PUT", "/api/v1/settings/webhook", map[string]any{
+		"url": "https://example.com/hook", "events": []string{"nope"},
+	}, nil); r.status != 422 {
+		t.Fatalf("bad events: %d", r.status)
+	}
+
+	// Subscribe only to transitions; created/note events enqueue nothing.
+	if err := st.SetWebhook(t.Context(), actor, "https://example.com/hook", "s3", []string{"transitioned"}); err != nil {
+		t.Fatal(err)
+	}
+	resp := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Filtered Account"))
+	id, _ := resp["id"].(string)
+
+	queued := func() (actions []string) {
+		rows, qerr := e.pool.Query(t.Context(),
+			`SELECT action FROM notification_deliveries ORDER BY id`)
+		if qerr != nil {
+			t.Fatal(qerr)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a string
+			if err := rows.Scan(&a); err != nil {
+				t.Fatal(err)
+			}
+			actions = append(actions, a)
+		}
+		return actions
+	}
+	if got := queued(); len(got) != 0 {
+		t.Fatalf("filtered-out event still enqueued: %v", got)
+	}
+
+	// A note on the same shipment is also outside the subscription.
+	coord.mustOK(201, "POST", "/api/v1/shipments/"+id+"/events", map[string]any{"kind": "note", "body": "check"})
+	if got := queued(); len(got) != 0 {
+		t.Fatalf("note event still enqueued: %v", got)
+	}
+
+	// A transition is inside the subscription and enqueues.
+	ver := resp["version"].(float64)
+	sh := coord.mustOK(200, "POST", "/api/v1/shipments/"+id+"/transitions",
+		map[string]any{"to": "quoted", "version": int(ver),
+			"quote": map[string]any{"amount_cents": 100, "currency": "USD"}})
+	if sh["state"] != "quoted" {
+		t.Fatalf("state %v", sh["state"])
+	}
+	if got := queued(); len(got) != 1 || got[0] != "transitioned" {
+		t.Fatalf("transition should enqueue: %v", got)
+	}
+	// Clean the queue so the unfiltered check below starts empty.
+	if _, err := e.pool.Exec(t.Context(), `DELETE FROM notification_deliveries`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Widening the filter to all actions (nil) restores enqueueing.
+	if err := st.SetWebhook(t.Context(), actor, "https://example.com/hook", "s3", nil); err != nil {
+		t.Fatal(err)
+	}
+	coord.mustOK(201, "POST", "/api/v1/shipments/"+id+"/events", map[string]any{"kind": "note", "body": "check 2"})
+	if got := queued(); len(got) != 1 || got[0] != "note_added" {
+		t.Fatalf("expected one note delivery, got %v", got)
+	}
+
+	// GET exposes the subscription for admins.
+	r := admin.do("GET", "/api/v1/settings/webhook", nil, nil)
+	if r.status != 200 || r.body["events"] != nil {
+		t.Fatalf("GET webhook events: %d %s", r.status, r.raw)
 	}
 }

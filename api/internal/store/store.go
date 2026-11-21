@@ -88,8 +88,17 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
+// WebhookActions is every shipment_events.action value a subscription can
+// filter to. Keep in sync with shipment_events_action_check.
+var WebhookActions = []string{
+	"created", "transitioned", "assigned", "note_added",
+	"exception_opened", "exception_resolved", "attachment_added", "attachment_removed",
+}
+
 // SetWebhook updates the org's notification webhook. Empty URL disables it.
-func (s *Store) SetWebhook(ctx context.Context, a Actor, url, secret string) error {
+// events nil or empty means every action enqueues a delivery; a non-empty
+// list limits deliveries to those actions.
+func (s *Store) SetWebhook(ctx context.Context, a Actor, url, secret string, events []string) error {
 	var u, sec *string
 	if url != "" {
 		u = &url
@@ -97,20 +106,25 @@ func (s *Store) SetWebhook(ctx context.Context, a Actor, url, secret string) err
 	if secret != "" {
 		sec = &secret
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE organizations SET webhook_url = $2, webhook_secret = $3 WHERE id = $1`,
-		a.Org.ID, u, sec)
+	var ev *([]string)
+	if len(events) > 0 {
+		ev = &events
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET webhook_url = $2, webhook_secret = $3, webhook_events = $4 WHERE id = $1`,
+		a.Org.ID, u, sec, ev)
 	return err
 }
 
-// Webhook returns the org's webhook config (url, whether a secret is set).
-func (s *Store) Webhook(ctx context.Context, a Actor) (url string, hasSecret bool, err error) {
+// Webhook returns the org's webhook config (url, subscribed actions — nil means
+// all — and whether a secret is set).
+func (s *Store) Webhook(ctx context.Context, a Actor) (url string, events []string, hasSecret bool, err error) {
 	var u, sec *string
-	err = s.pool.QueryRow(ctx, `SELECT webhook_url, webhook_secret FROM organizations WHERE id = $1`,
-		a.Org.ID).Scan(&u, &sec)
+	err = s.pool.QueryRow(ctx, `SELECT webhook_url, webhook_secret, webhook_events FROM organizations WHERE id = $1`,
+		a.Org.ID).Scan(&u, &sec, &events)
 	if u != nil {
 		url = *u
 	}
-	return url, sec != nil, err
+	return url, events, sec != nil, err
 }
 
 // Delivery is a queued outbound webhook POST.

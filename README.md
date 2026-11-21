@@ -43,7 +43,9 @@ explains how it got there.
   With a calendar, SLA deadlines count business minutes — a request opened
   Friday 16:00 under a Mon-Fri 9-17 calendar gets its remaining hours on
   Monday. Without one, SLAs count wall-clock hours.
-- **Notification webhooks**: admins point the org at an `https://` endpoint
+- **Notification webhooks**: admins point the org at an `https://` endpoint and can
+  subscribe to a subset of event actions (`events` on `PUT /api/v1/settings/webhook` —
+  e.g. `["transitioned"]` for an SLA-breach-only integration; empty means all). Every
   and every shipment event is POSTed there as signed JSON (HMAC-SHA256
   `X-CargoDesk-Signature`). Deliveries are queued in the same transaction as
   the event (outbox pattern) and retried with backoff by a background
@@ -244,7 +246,7 @@ No external API keys are used or required.
 
 2. Organization and user management for admins.
 3. SLA for later stages (e.g. time to schedule) and per-day business windows.
-4. Email/WhatsApp channels for the existing webhook pipeline, and SLA-breach-only filtering.
+4. Email/WhatsApp channels for the existing webhook pipeline.
 5. Attachments for delivery evidence with retention rules.
 
 ## License

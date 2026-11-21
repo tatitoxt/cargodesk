@@ -170,10 +170,18 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 	// Transactional outbox: queue the webhook POST in the same transaction so
 	// it can never be lost between commit and delivery.
 	var url *string
-	if err := q.QueryRow(ctx, `SELECT webhook_url FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url); err != nil {
+	var events []string
+	if err := q.QueryRow(ctx, `SELECT webhook_url, webhook_events FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url, &events); err != nil {
 		return 0, err
 	}
-	if url != nil && *url != "" {
+	subscribed := len(events) == 0
+	for _, action := range events {
+		if action == e.Action {
+			subscribed = true
+			break
+		}
+	}
+	if url != nil && *url != "" && subscribed {
 		payload, err := json.Marshal(map[string]any{
 			"event":          e.Action,
 			"shipment_id":    e.ShipmentID,
