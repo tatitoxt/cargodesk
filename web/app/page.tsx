@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { api, formatDateTime, STATE_LABELS, STATES, type Shipment, type User } from "@/lib/api";
+import { api, formatDateTime, STATE_LABELS, STATES, type SavedView, type Shipment, type User } from "@/lib/api";
 import { RequireSession, useMe } from "@/lib/session";
 import { Nav } from "@/components/Nav";
 import { SLABadge, StateBadge } from "@/components/Badges";
@@ -22,6 +22,10 @@ function Board() {
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [q, setQ] = useState(params.get("q") ?? "");
+  const [views, setViews] = useState<SavedView[]>([]);
+  const [activeView, setActiveView] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [viewName, setViewName] = useState("");
 
   // Filters live in the URL so refresh and shared links keep them.
   const query = new URLSearchParams();
@@ -46,13 +50,44 @@ function Board() {
   useEffect(() => {
     api<{ users: User[] }>("/users").then((r) => setUsers(r.users)).catch(setError);
   }, []);
+  useEffect(() => {
+    api<{ views: SavedView[] }>("/views").then((r) => setViews(r.views)).catch(setError);
+  }, []);
 
   function setFilter(key: string, value: string) {
     const next = new URLSearchParams(qs);
     if (value) next.set(key, value);
     else next.delete(key);
     next.delete("page"); // any filter change goes back to page 1
+    setActiveView(""); // filters no longer match a saved view
     router.replace(`${pathname}${next.size ? `?${next}` : ""}`);
+  }
+
+  function applyView(v: SavedView) {
+    const next = new URLSearchParams();
+    for (const [k, val] of Object.entries(v.filters)) next.set(k, val);
+    setActiveView(v.id);
+    setQ(v.filters["q"] ?? "");
+    router.replace(`${pathname}${next.size ? `?${next}` : ""}`);
+  }
+
+  async function saveView() {
+    const filters: Record<string, string> = {};
+    for (const k of FILTER_KEYS) {
+      const v = params.get(k);
+      if (v) filters[k] = v;
+    }
+    const v = await api<SavedView>("/views", { method: "POST", body: { name: viewName, filters } });
+    setViews((vs) => [...vs, v].sort((a, b) => a.name.localeCompare(b.name)));
+    setActiveView(v.id);
+    setViewName("");
+    setSaving(false);
+  }
+
+  async function deleteView(id: string) {
+    await api(`/views/${id}`, { method: "DELETE" });
+    setViews((vs) => vs.filter((v) => v.id !== id));
+    if (activeView === id) setActiveView("");
   }
 
   function goToPage(p: number) {
@@ -103,11 +138,48 @@ function Board() {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Reference, account, place" />
         </label>
         <button type="submit" className="secondary">Search</button>
+        {views.length > 0 && (
+          <label>
+            Saved view
+            <select
+              value={activeView}
+              onChange={(e) => {
+                const v = views.find((x) => x.id === e.target.value);
+                setActiveView(e.target.value);
+                if (v) applyView(v);
+              }}
+            >
+              <option value="">—</option>
+              {views.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </label>
+        )}
+        <button type="button" className="secondary" disabled={!qs} onClick={() => setSaving((s) => !s)}>
+          Save view
+        </button>
+        {activeView && (
+          <button type="button" className="secondary" onClick={() => deleteView(activeView).catch(setError)}>
+            Delete view
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {me.role !== "viewer" && (
           <a href={`/api/v1/exports/shipments.csv${qs ? `?${qs}` : ""}`} download>Export CSV</a>
         )}
       </form>
+      {saving && (
+        <form
+          className="card filters"
+          onSubmit={(e) => { e.preventDefault(); saveView().catch(setError); }}
+          aria-label="Save view"
+        >
+          <label>
+            View name
+            <input value={viewName} onChange={(e) => setViewName(e.target.value)} maxLength={60} required />
+          </label>
+          <button type="submit" className="secondary">Save current filters</button>
+        </form>
+      )}
       <ErrorBox error={error} />
       {items === null ? (
         <p className="muted">Loading…</p>

@@ -562,3 +562,63 @@ func TestCSVExport(t *testing.T) {
 		t.Fatalf("full export lines = %d, want header + 9", n)
 	}
 }
+
+func TestSavedViews(t *testing.T) {
+	e := newEnv(t, true)
+	c := e.login(seed.CoordinatorA)
+
+	body := c.mustOK(200, "GET", "/api/v1/views", nil)
+	if n := len(body["views"].([]any)); n != 0 {
+		t.Fatalf("initial views = %d", n)
+	}
+
+	v := c.mustOK(201, "POST", "/api/v1/views", map[string]any{
+		"name": "My overdue", "filters": map[string]string{"overdue": "true", "owner": "me"},
+	})
+	id := v["id"].(string)
+	if v["name"] != "My overdue" || v["created_by"] != seed.CoordinatorA {
+		t.Fatalf("created view: %v", v)
+	}
+
+	body = c.mustOK(200, "GET", "/api/v1/views", nil)
+	views := body["views"].([]any)
+	if len(views) != 1 || views[0].(map[string]any)["id"] != id {
+		t.Fatalf("list views: %s", body["views"])
+	}
+	filters := views[0].(map[string]any)["filters"].(map[string]any)
+	if filters["overdue"] != "true" || filters["owner"] != "me" {
+		t.Fatalf("filters: %v", filters)
+	}
+
+	if r := c.do("POST", "/api/v1/views", map[string]any{
+		"name": "my overdue", "filters": map[string]string{"q": "x"},
+	}, nil); r.status != 409 || r.body["error"] != "view_name_taken" {
+		t.Fatalf("duplicate name: %d %s", r.status, r.raw)
+	}
+
+	for _, bad := range []map[string]any{
+		{"name": "x", "filters": map[string]string{"bogus": "1"}},
+		{"name": "x", "filters": map[string]string{}},
+		{"name": "  ", "filters": map[string]string{"q": "x"}},
+	} {
+		if r := c.do("POST", "/api/v1/views", bad, nil); r.status != 422 {
+			t.Fatalf("invalid %v: %d %s", bad, r.status, r.raw)
+		}
+	}
+
+	// Views are org-scoped: the other tenant sees neither the view nor can delete it.
+	other := e.login(seed.CoordinatorB)
+	if b := other.mustOK(200, "GET", "/api/v1/views", nil); len(b["views"].([]any)) != 0 {
+		t.Fatalf("tenant B sees org A views: %s", b["views"])
+	}
+	if r := other.do("DELETE", "/api/v1/views/"+id, nil, nil); r.status != 404 {
+		t.Fatalf("cross-tenant delete: %d", r.status)
+	}
+
+	if r := c.do("DELETE", "/api/v1/views/"+id, nil, nil); r.status != 204 {
+		t.Fatalf("delete: %d %s", r.status, r.raw)
+	}
+	if r := c.do("DELETE", "/api/v1/views/"+id, nil, nil); r.status != 404 {
+		t.Fatalf("re-delete: %d", r.status)
+	}
+}

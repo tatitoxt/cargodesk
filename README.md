@@ -45,6 +45,9 @@ explains how it got there.
   exceptions with kind, reason and resolution.
 - **Board and filters**: state, owner (incl. unassigned), overdue, due today
   (in the organization's timezone) and text search; filters live in the URL.
+- **Saved views**: any user can name the current filter set (`POST/GET/DELETE
+  /api/v1/views`); views are shared across the organization and names are
+  unique per tenant regardless of case.
 - **Pagination**: `GET /api/v1/shipments` accepts `limit` (1–500) and `offset`,
   returns `total` alongside the page, and sorts by a unique tiebreaker so
   pages are stable under concurrent writes; the board pages at 50 rows and
@@ -164,13 +167,15 @@ E2E specs (`web/e2e/`):
 - Concurrent edit in two browser sessions → `409` conflict → reload.
 - Viewer read-only UI and API `403`; tenant isolation; admin SLA change; off-site post-login redirects ignored.
 - CSV export with formula escaping.
+- Saved views: save the current filters under a name, re-apply from the board,
+  and delete.
 
 ### Measured results (this repository, reproducible with the commands above)
 
-- Go: 56 top-level tests and 92 subtests pass across 7 packages
-  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 148), including real-PostgreSQL
+- Go: 57 top-level tests and 92 subtests pass across 7 packages
+  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 149), including real-PostgreSQL
   integration tests in `internal/store` and `internal/httpapi`.
-- Playwright: 7 E2E tests pass in Chromium.
+- Playwright: 8 E2E tests pass in Chromium.
 
 ### CI
 
@@ -207,17 +212,15 @@ No external API keys are used or required.
 - Delivery "evidence" is a text record (received by, time, note); no file uploads.
 - No notifications (email/WhatsApp), no maps/GPS, no customer portal.
 - Organizations and users are created by the seed only; there is no admin UI for them.
-- No pagination on the board (the API returns at most 200 rows per query).
 - No load testing or security audit has been performed.
 
 ## Roadmap
 
 1. Real authentication (OIDC) with the existing role model.
 2. Organization and user management for admins.
-3. Saved views on the board.
-4. Business-hours SLA calendars and SLA for later stages (e.g. time to schedule).
-5. Notifications for breached SLAs and due next actions.
-6. Attachments for delivery evidence with retention rules.
+3. Business-hours SLA calendars and SLA for later stages (e.g. time to schedule).
+4. Notifications for breached SLAs and due next actions.
+5. Attachments for delivery evidence with retention rules.
 
 ## License
 

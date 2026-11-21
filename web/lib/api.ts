@@ -39,6 +39,7 @@ export interface ShipmentException {
   resolved_at: string | null; resolution: string | null;
 }
 export interface ShipmentDetail extends Shipment { quotes: Quote[]; exceptions: ShipmentException[] }
+export interface SavedView { id: string; name: string; filters: Record<string, string>; created_by: string; created_at: string }
 export interface TimelineEvent {
   id: number; action: string; actor: UserRef; from_state: string | null; to_state: string | null;
   reason: string | null; data: Record<string, unknown> | null; correlation_id: string; created_at: string;

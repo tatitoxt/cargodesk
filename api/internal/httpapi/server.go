@@ -68,6 +68,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/shipments/{id}/events", s.editor(s.handleAddEvent))
 	m.HandleFunc("PATCH /api/v1/shipments/{id}/assignment", s.editor(s.handleAssign))
 	m.HandleFunc("GET /api/v1/exports/shipments.csv", s.authed(s.handleExport))
+	m.HandleFunc("GET /api/v1/views", s.authed(s.handleListViews))
+	m.HandleFunc("POST /api/v1/views", s.authed(s.handleCreateView))
+	m.HandleFunc("DELETE /api/v1/views/{id}", s.authed(s.handleDeleteView))
 	m.HandleFunc("GET /api/v1/settings/sla", s.authed(s.handleGetSLA))
 	m.HandleFunc("PUT /api/v1/settings/sla", s.authed(s.handlePutSLA))
 }

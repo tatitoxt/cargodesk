@@ -24,6 +24,9 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | POST | `/api/v1/shipments/{id}/events` | coordinator, admin | Notes and exceptions: `{"kind": "note", "body": "…"}`, `{"kind": "exception", "version": 4, "exception_kind": "…", "reason": "…"}` or `{"kind": "exception_resolved", …}`. |
 | PATCH | `/api/v1/shipments/{id}/assignment` | coordinator, admin | Owner, priority, next action. Requires `version`. |
 | GET | `/api/v1/exports/shipments.csv` | coordinator, admin | Same filters as the list. Allow-listed columns, formula-escaped. |
+| GET | `/api/v1/views` | any | Saved board views of the caller's organization. |
+| POST | `/api/v1/views` | any | `{"name": "…", "filters": {"state": "…", "owner": "…", "overdue": "…", "due": "…", "q": "…"}}`. Names unique per tenant (case-insensitive) → `409`; unknown filter keys → `422`. |
+| DELETE | `/api/v1/views/{id}` | any | Deletes the view. Other tenants' IDs → `404`. |
 | GET | `/api/v1/settings/sla` | any | Quote SLA hours per priority. |
 | PUT | `/api/v1/settings/sla` | admin | Update SLA hours (1–720). |
 

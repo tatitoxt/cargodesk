@@ -331,6 +331,45 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	views, err := s.cfg.Store.ListViews(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"views": views})
+}
+
+func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	var in struct {
+		Name    string            `json:"name"`
+		Filters map[string]string `json:"filters"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	v, err := s.cfg.Store.CreateView(r.Context(), a, in.Name, in.Filters, s.cfg.Clock())
+	switch {
+	case errors.Is(err, store.ErrViewNameTaken):
+		writeError(w, r, http.StatusConflict, "view_name_taken", err.Error(), nil)
+	case err != nil:
+		s.writeDomainError(w, r, err)
+	default:
+		writeJSON(w, http.StatusCreated, v)
+	}
+}
+
+func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if err := s.cfg.Store.DeleteView(r.Context(), a, r.PathValue("id")); err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleGetSLA(w http.ResponseWriter, r *http.Request) {
 	a := actor(r)
 	p, err := s.cfg.Store.SLAPolicy(r.Context(), a)
