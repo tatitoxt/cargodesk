@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/text/currency"
 )
 
 type State string
@@ -145,8 +147,8 @@ func Validate(from State, in TransitionInput, f Facts) error {
 			if in.Quote.AmountCents <= 0 {
 				add("quote.amount_cents", "must be greater than 0")
 			}
-			if !currencyRe.MatchString(in.Quote.Currency) {
-				add("quote.currency", "must be a 3-letter ISO 4217 code")
+			if _, err := currency.ParseISO(in.Quote.Currency); err != nil || !currencyRe.MatchString(in.Quote.Currency) {
+				add("quote.currency", "must be an assigned ISO 4217 code")
 			}
 			if in.Quote.ValidUntil != nil && !in.Quote.ValidUntil.After(f.Now) {
 				add("quote.valid_until", "must be in the future")
