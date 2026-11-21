@@ -124,6 +124,16 @@ func runSeed(ctx context.Context, log *slog.Logger, args []string) error {
 			return err
 		}
 		if n > 0 {
+			// seed.Run commits organizations before users, so an interrupted
+			// seed leaves organizations without users — a marker on
+			// organizations alone would then report "seeded" forever.
+			var u int
+			if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&u); err != nil {
+				return err
+			}
+			if u == 0 {
+				return fmt.Errorf("database is partially seeded (%d organizations, no users); rerun with -reset", n)
+			}
 			log.Info("database already seeded; use -reset to reload")
 			return nil
 		}
