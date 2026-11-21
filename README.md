@@ -265,10 +265,10 @@ No external API keys are used or required.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
 - One currency per quote and no pricing logic; quotes are entered manually.
-- One timezone per organization; the business-hours calendar is a single
-  weekly window (no per-day windows, no half-days).
-- Delivery "evidence" is a text record (received by, time, note); no file uploads.
-- Notifications are outbound webhooks only (signed with HMAC); no email/WhatsApp, no maps/GPS, no customer portal.
+- Delivery "evidence" is a text record (received by, time, note); photo/POD
+  evidence is a generic attachment rather than a dedicated field.
+- Notifications cover outbound webhooks (HMAC-signed) and email (SMTP); no
+  WhatsApp, maps/GPS, or customer portal.
 - Organizations are created by the seed only; members sign in with the demo or OIDC login, not by password invite yet.
 - No load testing or security audit has been performed.
 
