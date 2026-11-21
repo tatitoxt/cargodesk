@@ -76,6 +76,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/settings/business-hours", s.authed(s.handleGetBusinessHours))
 	m.HandleFunc("PUT /api/v1/settings/business-hours", s.authed(s.handlePutBusinessHours))
 	m.HandleFunc("DELETE /api/v1/settings/business-hours", s.authed(s.handleDeleteBusinessHours))
+	m.HandleFunc("GET /api/v1/settings/webhook", s.authed(s.handleGetWebhook))
+	m.HandleFunc("PUT /api/v1/settings/webhook", s.authed(s.handlePutWebhook))
+	m.HandleFunc("DELETE /api/v1/settings/webhook", s.authed(s.handleDeleteWebhook))
+	m.HandleFunc("POST /api/v1/settings/webhook/test", s.authed(s.handleTestWebhook))
 }
 
 // ServeHTTP wraps the mux with recovery, correlation IDs, body limits,

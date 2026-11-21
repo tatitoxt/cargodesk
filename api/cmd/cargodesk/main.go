@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/tatitoxt/cargodesk/api/internal/httpapi"
+	"github.com/tatitoxt/cargodesk/api/internal/notify"
 	"github.com/tatitoxt/cargodesk/api/internal/piiscan"
 	"github.com/tatitoxt/cargodesk/api/internal/seed"
 	"github.com/tatitoxt/cargodesk/api/internal/store"
@@ -92,6 +93,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		}
 		errc := make(chan error, 1)
 		go func() { errc <- srv.ListenAndServe() }()
+		go (&notify.Dispatcher{Store: st, Log: log}).Run(ctx)
 		log.Info("listening", "addr", srv.Addr, "demo_auth", demo)
 		select {
 		case err := <-errc:

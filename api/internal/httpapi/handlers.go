@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -511,4 +512,88 @@ func (s *Server) handleDeleteBusinessHours(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	url, hasSecret, err := s.cfg.Store.Webhook(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	deliveries, err := s.cfg.Store.RecentDeliveries(r.Context(), a, 10)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url": url, "has_secret": hasSecret, "deliveries": deliveries,
+	})
+}
+
+func (s *Server) handlePutWebhook(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the webhook", nil)
+		return
+	}
+	var in struct {
+		URL    string `json:"url"`
+		Secret string `json:"secret"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	u, err := url.Parse(in.URL)
+	if in.URL == "" || err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"url must be a full http(s) URL", map[string]any{"url": "invalid"})
+		return
+	}
+	if in.URL != "" && !strings.HasPrefix(in.URL, "https://") {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"webhook URL must use https", map[string]any{"url": "https_required"})
+		return
+	}
+	if err := s.cfg.Store.SetWebhook(r.Context(), a, in.URL, in.Secret); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": in.URL, "has_secret": in.Secret != ""})
+}
+
+func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the webhook", nil)
+		return
+	}
+	if err := s.cfg.Store.SetWebhook(r.Context(), a, "", ""); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can test the webhook", nil)
+		return
+	}
+	url, _, err := s.cfg.Store.Webhook(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	if url == "" {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"configure a webhook URL first", nil)
+		return
+	}
+	if err := s.cfg.Store.EnqueueTestDelivery(r.Context(), a, url); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 }

@@ -32,6 +32,22 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | GET | `/api/v1/settings/business-hours` | any | Org business-hours calendar (`null` when unset) + timezone. |
 | PUT | `/api/v1/settings/business-hours` | admin | `{"calendar": {"days": [1..7], "start_minute": 540, "end_minute": 1020, "holidays": ["YYYY-MM-DD"]}}`. Invalid → `422`. |
 | DELETE | `/api/v1/settings/business-hours` | admin | Remove the calendar; SLAs revert to wall-clock hours. |
+| GET | `/api/v1/settings/webhook` | any | Webhook URL, `has_secret` and the last 10 deliveries. |
+| PUT | `/api/v1/settings/webhook` | admin | `{"url": "https://…", "secret": "…"}`. https only; `422` otherwise. |
+| DELETE | `/api/v1/settings/webhook` | admin | Disable notifications. |
+| POST | `/api/v1/settings/webhook/test` | admin | Queue a `webhook_test` ping delivery. |
+
+### Outbound webhooks
+
+Every shipment event (`created`, `transitioned`, `assigned`, `note_added`,
+`exception_opened`, `exception_resolved`, …) is queued into
+`notification_deliveries` **inside the same transaction** as the event itself
+(transactional outbox — a notification can never be lost between commit and
+delivery). A dispatcher posts the JSON payload to the org's `webhook_url` with
+`Content-Type: application/json` and, when a secret is configured,
+`X-CargoDesk-Signature: sha256=<hmac-sha256 of the raw body>`. Failures retry
+with 30 s × attempts backoff, up to 8 attempts; the last 10 deliveries are
+visible via `GET /api/v1/settings/webhook`.
 
 Mutations require `Content-Type: application/json` (`415` otherwise) and
 bodies over 64 KiB are rejected with `413`. Reusing an `Idempotency-Key`

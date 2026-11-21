@@ -164,7 +164,38 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 		(organization_id, shipment_id, actor_id, action, from_state, to_state, reason, data, correlation_id, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
 		a.Org.ID, e.ShipmentID, a.UserID, e.Action, e.FromState, e.ToState, e.Reason, data, e.CorrelationID, e.At).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	// Transactional outbox: queue the webhook POST in the same transaction so
+	// it can never be lost between commit and delivery.
+	var url *string
+	if err := q.QueryRow(ctx, `SELECT webhook_url FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url); err != nil {
+		return 0, err
+	}
+	if url != nil && *url != "" {
+		payload, err := json.Marshal(map[string]any{
+			"event":          e.Action,
+			"shipment_id":    e.ShipmentID,
+			"organization":   a.Org.Slug,
+			"actor":          a.Email,
+			"from_state":     e.FromState,
+			"to_state":       e.ToState,
+			"reason":         e.Reason,
+			"data":           e.Data,
+			"correlation_id": e.CorrelationID,
+			"at":             e.At,
+		})
+		if err != nil {
+			return 0, err
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
+			(organization_id, event_id, action, url, payload) VALUES ($1, $2, $3, $4, $5)`,
+			a.Org.ID, id, e.Action, *url, payload); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 func strp(s string) *string {

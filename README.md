@@ -43,6 +43,12 @@ explains how it got there.
   With a calendar, SLA deadlines count business minutes — a request opened
   Friday 16:00 under a Mon-Fri 9-17 calendar gets its remaining hours on
   Monday. Without one, SLAs count wall-clock hours.
+- **Notification webhooks**: admins point the org at an `https://` endpoint
+  and every shipment event is POSTed there as signed JSON (HMAC-SHA256
+  `X-CargoDesk-Signature`). Deliveries are queued in the same transaction as
+  the event (outbox pattern) and retried with backoff by a background
+  dispatcher; `POST /api/v1/settings/webhook/test` sends a ping and
+  `GET` shows the last deliveries.
 - **Auditable timeline**: every change writes an append-only event (actor,
   action, from/to state, reason, change data, timestamp, correlation ID) in the same
   transaction as the change. PostgreSQL triggers reject `UPDATE`/`DELETE`/`TRUNCATE` on events.
@@ -216,7 +222,7 @@ No external API keys are used or required.
 - One timezone per organization; the business-hours calendar is a single
   weekly window (no per-day windows, no half-days).
 - Delivery "evidence" is a text record (received by, time, note); no file uploads.
-- No notifications (email/WhatsApp), no maps/GPS, no customer portal.
+- Notifications are outbound webhooks only (signed with HMAC); no email/WhatsApp, no maps/GPS, no customer portal.
 - Organizations and users are created by the seed only; there is no admin UI for them.
 - No load testing or security audit has been performed.
 
@@ -225,7 +231,7 @@ No external API keys are used or required.
 1. Real authentication (OIDC) with the existing role model.
 2. Organization and user management for admins.
 3. SLA for later stages (e.g. time to schedule) and per-day business windows.
-4. Notifications for breached SLAs and due next actions.
+4. Email/WhatsApp channels for the existing webhook pipeline, and SLA-breach-only filtering.
 5. Attachments for delivery evidence with retention rules.
 
 ## License

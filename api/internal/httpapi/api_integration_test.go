@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
@@ -17,21 +18,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/tatitoxt/cargodesk/api/internal/httpapi"
+	"github.com/tatitoxt/cargodesk/api/internal/notify"
 	"github.com/tatitoxt/cargodesk/api/internal/seed"
 	"github.com/tatitoxt/cargodesk/api/internal/store"
 	"github.com/tatitoxt/cargodesk/api/internal/testdb"
 )
 
 type env struct {
-	t   *testing.T
-	srv *httptest.Server
-	now atomic.Pointer[time.Time]
+	t    *testing.T
+	srv  *httptest.Server
+	now  atomic.Pointer[time.Time]
+	pool *pgxpool.Pool
 }
 
 func newEnv(t *testing.T, demo bool) *env {
 	pool := testdb.Fresh(t)
-	e := &env{t: t}
+	e := &env{t: t, pool: pool}
 	now := testdb.Now
 	e.now.Store(&now)
 	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: demo,
@@ -677,5 +682,98 @@ func TestBusinessHoursCalendar(t *testing.T) {
 	revDue, _ := time.Parse(time.RFC3339, reverted["due_at"].(string))
 	if !revDue.Equal(baseDue) {
 		t.Fatalf("reverted due = %v, want %v", revDue, baseDue)
+	}
+}
+
+func TestWebhookNotifications(t *testing.T) {
+	// Receiver that records bodies + signatures.
+	var mu sync.Mutex
+	var got []struct {
+		body string
+		sig  string
+	}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, struct {
+			body string
+			sig  string
+		}{string(b), r.Header.Get("X-CargoDesk-Signature")})
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(receiver.Close)
+
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	coord := e.login(seed.CoordinatorA)
+	viewer := e.login(seed.ViewerA)
+
+	// RBAC: viewer and coordinator cannot configure the webhook.
+	if r := viewer.do("PUT", "/api/v1/settings/webhook", map[string]any{"url": receiver.URL}, nil); r.status != 403 {
+		t.Fatalf("viewer PUT webhook: %d", r.status)
+	}
+	if r := coord.do("PUT", "/api/v1/settings/webhook", map[string]any{"url": receiver.URL}, nil); r.status != 403 {
+		t.Fatalf("coordinator PUT webhook: %d", r.status)
+	}
+	// http (not https) is rejected; https or, for tests, plain http receiver:
+	// the API demands https, so use the receiver behind an https-looking URL check.
+	if r := admin.do("PUT", "/api/v1/settings/webhook", map[string]any{"url": "http://example.com/hook"}, nil); r.status != 422 {
+		t.Fatalf("http webhook: %d", r.status)
+	}
+	// httptest receiver is http:// — allow it by relaxing the check via direct store call for the test target.
+	st := store.New(e.pool)
+	actor, err := st.ActorByUserID(t.Context(), seed.AdminA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWebhook(t.Context(), actor, receiver.URL, "s3cr3t"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every shipment event should enqueue + deliver a POST.
+	coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Webhook Account"))
+
+	// Dispatcher runs against the same pool.
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	d := &notify.Dispatcher{Store: st, Interval: 20 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	go d.Run(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 1 {
+		t.Fatal("no webhook delivery received")
+	}
+	if got[0].sig == "" || !strings.HasPrefix(got[0].sig, "sha256=") {
+		t.Fatalf("missing HMAC signature: %q", got[0].sig)
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(got[0].body), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["event"] != "created" || m["organization"] != "demo-freight" {
+		t.Fatalf("payload: %v", m)
+	}
+
+	// GET shows the delivered log for the admin.
+	r := admin.do("GET", "/api/v1/settings/webhook", nil, nil)
+	if r.status != 200 || r.body["url"] != receiver.URL || r.body["has_secret"] != true {
+		t.Fatalf("GET webhook: %d %s", r.status, r.raw)
+	}
+	dels, _ := r.body["deliveries"].([]any)
+	if len(dels) == 0 || dels[0].(map[string]any)["delivered"] != true {
+		t.Fatalf("deliveries log: %s", r.raw)
 	}
 }

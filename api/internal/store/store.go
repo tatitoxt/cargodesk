@@ -3,6 +3,7 @@
 package store
 
 import (
+	"encoding/json"
 	"context"
 	"errors"
 	"fmt"
@@ -46,7 +47,11 @@ type Org struct {
 	Slug     string         `json:"slug"`
 	Name     string         `json:"name"`
 	Timezone string         `json:"timezone"`
-	Loc      *time.Location `json:"-"`
+	// WebhookURL receives a JSON POST per shipment event when set.
+	WebhookURL *string `json:"-"`
+	// WebhookSecret, when set, signs bodies as X-CargoDesk-Signature: sha256=<hmac>.
+	WebhookSecret *string `json:"-"`
+	Loc            *time.Location `json:"-"`
 }
 
 func loadLoc(name string) *time.Location {
@@ -82,6 +87,126 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 }
 
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+// SetWebhook updates the org's notification webhook. Empty URL disables it.
+func (s *Store) SetWebhook(ctx context.Context, a Actor, url, secret string) error {
+	var u, sec *string
+	if url != "" {
+		u = &url
+	}
+	if secret != "" {
+		sec = &secret
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET webhook_url = $2, webhook_secret = $3 WHERE id = $1`,
+		a.Org.ID, u, sec)
+	return err
+}
+
+// Webhook returns the org's webhook config (url, whether a secret is set).
+func (s *Store) Webhook(ctx context.Context, a Actor) (url string, hasSecret bool, err error) {
+	var u, sec *string
+	err = s.pool.QueryRow(ctx, `SELECT webhook_url, webhook_secret FROM organizations WHERE id = $1`,
+		a.Org.ID).Scan(&u, &sec)
+	if u != nil {
+		url = *u
+	}
+	return url, sec != nil, err
+}
+
+// Delivery is a queued outbound webhook POST.
+type Delivery struct {
+	ID        int64
+	EventID   int64
+	URL       string
+	Payload   json.RawMessage
+	Attempts  int
+	CreatedAt time.Time
+}
+
+// DueDeliveries claims up to n pending deliveries whose attempt is due.
+func (s *Store) DueDeliveries(ctx context.Context, n int) ([]Delivery, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, event_id, url, payload, attempts, created_at
+		FROM notification_deliveries
+		WHERE delivered_at IS NULL AND next_attempt_at <= now() AND attempts < 8
+		ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Delivery
+	for rows.Next() {
+		var d Delivery
+		if err := rows.Scan(&d.ID, &d.EventID, &d.URL, &d.Payload, &d.Attempts, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// MarkDelivered records a successful POST.
+func (s *Store) MarkDelivered(ctx context.Context, id int64, statusCode int) error {
+	_, err := s.pool.Exec(ctx, `UPDATE notification_deliveries
+		SET delivered_at = now(), status_code = $2, last_error = NULL WHERE id = $1`, id, statusCode)
+	return err
+}
+
+// RetryDelivery schedules the next attempt with linear backoff (attempts*30s)
+// or gives up after the 8th try (delivered_at stays NULL; next_attempt_at is
+// pushed far out so it stops matching the due query).
+func (s *Store) RetryDelivery(ctx context.Context, id int64, attempts int, errMsg string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE notification_deliveries
+		SET attempts = $2, last_error = $3,
+		    next_attempt_at = CASE WHEN $2 >= 8 THEN '9999-01-01'::timestamptz
+		                           ELSE now() + ($2 || ' seconds')::interval * 30 END
+		WHERE id = $1`, id, attempts, errMsg)
+	return err
+}
+
+// RecentDeliveries lists the org's last n deliveries for the settings UI.
+type DeliveryLog struct {
+	ID          int64      `json:"id"`
+	Action      string     `json:"action"`
+	StatusCode  *int       `json:"status_code"`
+	Attempts    int        `json:"attempts"`
+	Delivered   bool       `json:"delivered"`
+	LastError   *string    `json:"last_error"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at"`
+}
+
+func (s *Store) RecentDeliveries(ctx context.Context, a Actor, n int) ([]DeliveryLog, error) {
+	rows, err := s.pool.Query(ctx, `SELECT d.id, d.action, d.status_code, d.attempts,
+			d.delivered_at IS NOT NULL, d.last_error, d.created_at, d.delivered_at
+		FROM notification_deliveries d
+		WHERE d.organization_id = $1 ORDER BY d.id DESC LIMIT $2`, a.Org.ID, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DeliveryLog{}
+	for rows.Next() {
+		var l DeliveryLog
+		if err := rows.Scan(&l.ID, &l.Action, &l.StatusCode, &l.Attempts, &l.Delivered, &l.LastError, &l.CreatedAt, &l.DeliveredAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// EnqueueTestDelivery queues a synthetic ping so admins can verify the URL.
+func (s *Store) EnqueueTestDelivery(ctx context.Context, a Actor, url string) error {
+	payload, _ := json.Marshal(map[string]any{
+		"action":         "test",
+		"organization":   a.Org.Slug,
+		"actor":          a.Email,
+		"correlation_id": "test-" + a.Org.Slug,
+	})
+	_, err := s.pool.Exec(ctx, `INSERT INTO notification_deliveries (organization_id, action, url, payload)
+		VALUES ($1, 'webhook_test', $2, $3)`, a.Org.ID, url, payload)
+	return err
+}
 
 func (s *Store) tx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, s.pool, fn)
