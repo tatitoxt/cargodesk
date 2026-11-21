@@ -15,6 +15,8 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1089,5 +1091,101 @@ func TestScheduleSLA(t *testing.T) {
 		"pickup_at": testdb.Now.Add(48 * time.Hour), "carrier": "Carrier X"})
 	if sh["schedule_sla_status"] != "missed" || sh["scheduled_at"] == nil {
 		t.Fatalf("missed %v", sh)
+	}
+}
+
+func TestAttachmentRetention(t *testing.T) {
+	dir := t.TempDir()
+	e := newEnv(t, true, dir)
+	admin := e.login(seed.AdminA)
+	coord := e.login(seed.CoordinatorA)
+	sh := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Retention Org"))
+	id := sh["id"].(string)
+
+	upload := func() string {
+		var buf bytes.Buffer
+		wr := multipart.NewWriter(&buf)
+		part, _ := wr.CreateFormFile("file", "pod.pdf")
+		part.Write([]byte("pod bytes"))
+		wr.Close()
+		r := coord.do("POST", "/api/v1/shipments/"+id+"/attachments", buf.String(),
+			map[string]string{"Content-Type": wr.FormDataContentType()})
+		if r.status != 201 {
+			t.Fatalf("upload: %d %s", r.status, r.raw)
+		}
+		return r.body["id"].(string)
+	}
+	attID := upload()
+
+	// RBAC + validation.
+	if r := coord.do("PUT", "/api/v1/settings/retention", `{"attachmentRetentionDays":1}`, nil); r.status != 403 {
+		t.Fatalf("coordinator PUT retention: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/retention", `{"attachmentRetentionDays":-5}`, nil); r.status != 422 {
+		t.Fatalf("negative retention: %d %s", r.status, r.raw)
+	}
+	r := admin.do("PUT", "/api/v1/settings/retention", `{"attachmentRetentionDays":1}`, nil)
+	if r.status != 200 {
+		t.Fatalf("PUT retention: %d %s", r.status, r.raw)
+	}
+	if got := admin.mustOK(200, "GET", "/api/v1/settings/retention", nil)["attachmentRetentionDays"]; got != float64(1) {
+		t.Fatalf("GET retention: %v", got)
+	}
+
+	// Within the window the purge keeps the file.
+	r = admin.do("POST", "/api/v1/settings/retention/purge", `{}`, nil)
+	if r.status != 200 || r.body["purged"] != float64(0) {
+		t.Fatalf("early purge: %d %s", r.status, r.raw)
+	}
+
+	// Past the window the row, blob and audit trail all move. Advancing the
+	// clock expires the seeded sessions, so log in again.
+	e.advance(48 * time.Hour)
+	admin = e.login(seed.AdminA)
+	coord = e.login(seed.CoordinatorA)
+	blobBefore, _ := filepath.Glob(filepath.Join(dir, "*", "*pod.pdf"))
+	if len(blobBefore) == 0 {
+		t.Fatal("blob missing before purge")
+	}
+	if r := coord.do("POST", "/api/v1/settings/retention/purge", `{}`, nil); r.status != 403 {
+		t.Fatalf("coordinator purge: %d", r.status)
+	}
+	r = admin.do("POST", "/api/v1/settings/retention/purge", `{}`, nil)
+	if r.status != 200 || r.body["purged"] != float64(1) {
+		t.Fatalf("purge: %d %s", r.status, r.raw)
+	}
+	if got := coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/attachments", nil)["attachments"]; len(got.([]any)) != 0 {
+		t.Fatalf("post-purge list: %v", got)
+	}
+	if r := coord.do("GET", "/api/v1/shipments/"+id+"/attachments/"+attID, nil, nil); r.status != 404 {
+		t.Fatalf("post-purge download: %d", r.status)
+	}
+	if _, err := os.Stat(blobBefore[0]); !os.IsNotExist(err) {
+		t.Fatalf("blob still on disk: %v", err)
+	}
+	evs := coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/events", nil)
+	found := false
+	for _, ev := range evs["events"].([]any) {
+		m := ev.(map[string]any)
+		if m["action"] == "attachment_removed" && m["correlation_id"] == "retention-purge" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no retention-purge audit event")
+	}
+
+	// Retention 0 = keep forever.
+	admin.do("PUT", "/api/v1/settings/retention", `{"attachmentRetentionDays":0}`, nil)
+	upload()
+	e.advance(72 * time.Hour)
+	admin = e.login(seed.AdminA)
+	coord = e.login(seed.CoordinatorA)
+	r = admin.do("POST", "/api/v1/settings/retention/purge", `{}`, nil)
+	if r.body["purged"] != float64(0) {
+		t.Fatalf("purge with retention 0: %s", r.raw)
+	}
+	if got := coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/attachments", nil)["attachments"]; len(got.([]any)) != 1 {
+		t.Fatalf("list after disabled retention: %v", got)
 	}
 }

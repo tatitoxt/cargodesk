@@ -77,6 +77,12 @@ explains how it got there.
   are sanitized, and path-escape attempts are rejected); size is capped by
   `MAX_ATTACHMENT_BYTES` (default 10 MiB) and each file's SHA-256 is stored with
   the row. Uploads and deletes write audit events.
+  - **Retention**: `PUT /api/v1/settings/retention` (admin) sets
+    `attachmentRetentionDays` per organization (0 keeps files forever). A
+    background pass (`RETENTION_INTERVAL`, default hourly) deletes expired
+    rows and their blobs and writes an `attachment_removed` audit event under
+    the `retention-purge` correlation id; `POST /api/v1/settings/retention/purge`
+    runs the same pass synchronously.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
 - **Member management**: admins invite, re-role and remove organization members
   from the `/members` page (backed by `POST /api/v1/users`,
@@ -234,6 +240,7 @@ request and push to `main`:
 | `SECURE_COOKIE` | api | `false` | Sets `Secure` on the session cookie (use behind HTTPS). |
 | `ATTACHMENTS_DIR` | api | `data/attachments` | Blob storage root for shipment attachments; empty disables uploads. |
 | `MAX_ATTACHMENT_BYTES` | api | `10485760` | Per-file upload size cap in bytes. |
+| `RETENTION_INTERVAL` | api | `1h` | Attachment retention purge interval; `0` disables the background pass. |
 | `API_URL` | web (build time) | `http://localhost:8080` | Where the Next.js proxy forwards `/api/v1/*`. |
 | `CARGODESK_TEST_DATABASE_URL` | Go tests | – | Disposable database for integration tests. |
 
@@ -260,7 +267,6 @@ No external API keys are used or required.
 
 1. SLA for the remaining stages (e.g. time in transit) and per-day business windows.
 2. Email/WhatsApp channels for the existing webhook pipeline.
-3. Attachments for delivery evidence with retention rules.
 
 ## License
 

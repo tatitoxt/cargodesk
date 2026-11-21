@@ -95,10 +95,11 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		if iss, cid := os.Getenv("OIDC_ISSUER"), os.Getenv("OIDC_CLIENT_ID"); iss != "" && cid != "" {
 			oidc = httpapi.NewOIDCVerifier(iss, cid)
 		}
+		api := httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
+			AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc})
 		srv := &http.Server{
-			Addr: env("ADDR", ":8080"),
-			Handler: httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
-				AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc}),
+			Addr:              env("ADDR", ":8080"),
+			Handler:           api,
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       15 * time.Second,
 			WriteTimeout:      30 * time.Second,
@@ -106,6 +107,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		errc := make(chan error, 1)
 		go func() { errc <- srv.ListenAndServe() }()
 		go (&notify.Dispatcher{Store: st, Log: log}).Run(ctx)
+		go retentionLoop(ctx, api, log)
 		log.Info("listening", "addr", srv.Addr, "demo_auth", demo)
 		select {
 		case err := <-errc:
@@ -185,4 +187,36 @@ func scan(paths []string) error {
 	}
 	fmt.Println("no PII/secret-shaped values found")
 	return nil
+}
+
+// retentionLoop purges expired attachments on a timer. The interval defaults
+// to hourly; RETENTION_INTERVAL overrides it ("0" disables the loop).
+func retentionLoop(ctx context.Context, api *httpapi.Server, log *slog.Logger) {
+	interval := time.Hour
+	if v := os.Getenv("RETENTION_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Error("invalid RETENTION_INTERVAL", "value", v, "err", err)
+			return
+		}
+		interval = d
+	}
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := api.PurgeExpiredAttachments(ctx)
+			if err != nil {
+				log.Error("attachment retention purge failed", "err", err)
+			} else if n > 0 {
+				log.Info("attachment retention purge", "purged", n)
+			}
+		}
+	}
 }

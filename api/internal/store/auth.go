@@ -58,10 +58,10 @@ func (s *Store) CreateSession(ctx context.Context, userID string, now time.Time,
 // ActorBySession resolves a raw session token.
 func (s *Store) ActorBySession(ctx context.Context, token string, now time.Time) (Actor, error) {
 	var a Actor
-	err := s.pool.QueryRow(ctx, `SELECT u.id, u.email, u.display_name, u.role, o.id, o.slug, o.name, o.timezone
+	err := s.pool.QueryRow(ctx, `SELECT u.id, u.email, u.display_name, u.role, o.id, o.slug, o.name, o.timezone, o.attachment_retention_days
 		FROM sessions s JOIN users u ON u.id = s.user_id JOIN organizations o ON o.id = u.organization_id
 		WHERE s.token_hash = $1 AND s.expires_at > $2`, HashToken(token), now).
-		Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &a.Org.ID, &a.Org.Slug, &a.Org.Name, &a.Org.Timezone)
+		Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &a.Org.ID, &a.Org.Slug, &a.Org.Name, &a.Org.Timezone, &a.Org.AttachmentRetentionDays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Actor{}, ErrNotFound
 	}
@@ -77,9 +77,9 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 // ActorByUserID loads an actor without a session (seeding and tests).
 func (s *Store) ActorByUserID(ctx context.Context, userID string) (Actor, error) {
 	var a Actor
-	err := s.pool.QueryRow(ctx, `SELECT u.id, u.email, u.display_name, u.role, o.id, o.slug, o.name, o.timezone
+	err := s.pool.QueryRow(ctx, `SELECT u.id, u.email, u.display_name, u.role, o.id, o.slug, o.name, o.timezone, o.attachment_retention_days
 		FROM users u JOIN organizations o ON o.id = u.organization_id WHERE u.id = $1`, userID).
-		Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &a.Org.ID, &a.Org.Slug, &a.Org.Name, &a.Org.Timezone)
+		Scan(&a.UserID, &a.Email, &a.DisplayName, &a.Role, &a.Org.ID, &a.Org.Slug, &a.Org.Name, &a.Org.Timezone, &a.Org.AttachmentRetentionDays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Actor{}, ErrNotFound
 	}

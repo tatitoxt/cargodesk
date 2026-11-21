@@ -47,6 +47,9 @@ type Org struct {
 	Slug     string `json:"slug"`
 	Name     string `json:"name"`
 	Timezone string `json:"timezone"`
+	// AttachmentRetentionDays is how long shipment attachments are kept;
+	// 0 keeps them forever.
+	AttachmentRetentionDays int `json:"attachment_retention_days"`
 	// WebhookURL receives a JSON POST per shipment event when set.
 	WebhookURL *string `json:"-"`
 	// WebhookSecret, when set, signs bodies as X-CargoDesk-Signature: sha256=<hmac>.

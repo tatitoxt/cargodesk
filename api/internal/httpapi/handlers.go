@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -547,6 +548,72 @@ func (s *Server) handleDeleteBusinessHours(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGetRetention(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attachmentRetentionDays": a.Org.AttachmentRetentionDays,
+	})
+}
+
+func (s *Server) handlePutRetention(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change retention", nil)
+		return
+	}
+	var in struct {
+		AttachmentRetentionDays int `json:"attachmentRetentionDays"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.AttachmentRetentionDays < 0 {
+		writeError(w, r, http.StatusUnprocessableEntity, "invalid_retention",
+			"attachmentRetentionDays must be >= 0 (0 keeps attachments forever)", nil)
+		return
+	}
+	if err := s.cfg.Store.SetAttachmentRetention(r.Context(), a, in.AttachmentRetentionDays); err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"attachmentRetentionDays": in.AttachmentRetentionDays,
+	})
+}
+
+// handlePurgeRetention runs the retention pass synchronously (admin-only).
+// The same store call runs on a timer in production; this endpoint exists so
+// operators can force a pass and so the behavior is testable end to end.
+func (s *Server) handlePurgeRetention(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can run retention purges", nil)
+		return
+	}
+	n, err := s.PurgeExpiredAttachments(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"purged": n})
+}
+
+// PurgeExpiredAttachments deletes expired attachment rows and their blobs,
+// across every org that configured a retention window. It is used by the
+// admin endpoint above and by the background retention loop in main.
+func (s *Server) PurgeExpiredAttachments(ctx context.Context) (int, error) {
+	purged, err := s.cfg.Store.PurgeExpiredAttachments(ctx, s.now())
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range purged {
+		if path, perr := s.blobPath(p.StorageKey); perr == nil {
+			_ = os.Remove(path) // best-effort; metadata row is already gone
+		}
+	}
+	return len(purged), nil
 }
 
 func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {

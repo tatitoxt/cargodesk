@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -127,6 +128,107 @@ func (s *Store) DeleteAttachment(ctx context.Context, a Actor, shipmentID, attac
 		return Attachment{}, err
 	}
 	return att, tx.Commit(ctx)
+}
+
+// SetAttachmentRetention configures how many days an org keeps attachments
+// before the purge pass deletes them; 0 keeps them forever.
+func (s *Store) SetAttachmentRetention(ctx context.Context, a Actor, days int) error {
+	if days < 0 {
+		return fmt.Errorf("retention days must be >= 0")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE organizations SET attachment_retention_days = $1 WHERE id = $2`, days, a.Org.ID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PurgedAttachment is one attachment row deleted by a retention run. The
+// caller removes StorageKey's blob once the database deletion committed.
+type PurgedAttachment struct {
+	OrgID       string
+	ShipmentID  string
+	StorageKey  string
+	Filename    string
+	AttachmentID string
+}
+
+// PurgeExpiredAttachments deletes attachment rows older than each org's
+// configured retention window and returns their storage keys for blob
+// cleanup. Each deletion is audited with an attachment_removed event
+// attributed to the org's earliest user (shipment_events.actor_id is
+// NOT NULL and references a real user), under a "retention-purge"
+// correlation id. Orgs with retention_days = 0 are skipped.
+func (s *Store) PurgeExpiredAttachments(ctx context.Context, now time.Time) ([]PurgedAttachment, error) {
+	rows, err := s.pool.Query(ctx, `SELECT o.id, a.id, a.shipment_id, a.filename, a.storage_key
+		FROM organizations o JOIN attachments a ON a.organization_id = o.id
+		WHERE o.attachment_retention_days > 0
+		  AND a.created_at < $1::timestamptz - make_interval(days => o.attachment_retention_days)
+		ORDER BY o.id, a.created_at`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byOrg := map[string][]PurgedAttachment{}
+	var orgOrder []string
+	for rows.Next() {
+		var p PurgedAttachment
+		if err := rows.Scan(&p.OrgID, &p.AttachmentID, &p.ShipmentID, &p.Filename, &p.StorageKey); err != nil {
+			return nil, err
+		}
+		if _, seen := byOrg[p.OrgID]; !seen {
+			orgOrder = append(orgOrder, p.OrgID)
+		}
+		byOrg[p.OrgID] = append(byOrg[p.OrgID], p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []PurgedAttachment
+	for _, orgID := range orgOrder {
+		// The audit trail needs a real user per org; uploaded files imply at
+		// least one exists, but skip defensively rather than fail the run.
+		var userID string
+		err := s.pool.QueryRow(ctx,
+			`SELECT id FROM users WHERE organization_id = $1 ORDER BY created_at LIMIT 1`, orgID).Scan(&userID)
+		if err != nil {
+			continue
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return out, err
+		}
+		actor := Actor{UserID: userID, Org: Org{ID: orgID}}
+		for _, p := range byOrg[orgID] {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM attachments WHERE id = $1 AND organization_id = $2`,
+				p.AttachmentID, orgID); err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if _, err := insertEvent(ctx, tx, actor, EventRecord{
+				ShipmentID: p.ShipmentID, Action: "attachment_removed",
+				CorrelationID: "retention-purge", At: now,
+				Data: map[string]any{
+					"filename": p.Filename, "attachment_id": p.AttachmentID,
+					"reason": "retention",
+				},
+			}); err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return out, err
+		}
+		out = append(out, byOrg[orgID]...)
+	}
+	return out, nil
 }
 
 func scanAttachment(r pgx.CollectableRow) (Attachment, error) {
