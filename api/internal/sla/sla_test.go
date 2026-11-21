@@ -231,3 +231,61 @@ func TestDueAtBusinessSkipsHoliday(t *testing.T) {
 		t.Fatalf("due = %v, want %v", got, want)
 	}
 }
+
+// Mon-Fri 09:00-17:00 plus a Saturday half-day 09:00-13:00, expressed as
+// per-day windows.
+var weekdays9to5SatHalf = Calendar{Windows: []DayWindow{
+	{Day: 1, StartMinute: 540, EndMinute: 1020},
+	{Day: 2, StartMinute: 540, EndMinute: 1020},
+	{Day: 3, StartMinute: 540, EndMinute: 1020},
+	{Day: 4, StartMinute: 540, EndMinute: 1020},
+	{Day: 5, StartMinute: 540, EndMinute: 1020},
+	{Day: 6, StartMinute: 540, EndMinute: 780},
+}}
+
+func TestDueAtBusinessSaturdayHalfDay(t *testing.T) {
+	// Friday 16:00 + 2h: 1h Friday, then 3h Saturday (09:00-12:00) is enough.
+	created := time.Date(2026, 3, 13, 16, 0, 0, 0, time.UTC)
+	got := DueAtBusiness(created, 2, weekdays9to5SatHalf, time.UTC)
+	if want := time.Date(2026, 3, 14, 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+	// Friday 16:00 + 5h: 1h Friday, then exactly the 4h Saturday window —
+	// due at Saturday window close.
+	got = DueAtBusiness(created, 5, weekdays9to5SatHalf, time.UTC)
+	if want := time.Date(2026, 3, 14, 13, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestDueAtBusinessWindowsOverrideSharedWindow(t *testing.T) {
+	// Days says Mon-Fri, but Windows drops Saturday only — Windows wins, and
+	// a day missing from windows is non-working even if in days.
+	cal := Calendar{
+		Days:        []int{1, 2, 3, 4, 5, 6, 7},
+		StartMinute: 0,
+		EndMinute:   1440,
+		Windows: []DayWindow{
+			{Day: 1, StartMinute: 540, EndMinute: 1020},
+		},
+	}
+	created := time.Date(2026, 3, 13, 16, 0, 0, 0, time.UTC) // Friday: not in windows
+	got := DueAtBusiness(created, 1, cal, time.UTC)
+	if want := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestCalendarValidateWindows(t *testing.T) {
+	for _, c := range []Calendar{
+		{Windows: []DayWindow{{Day: 0, StartMinute: 0, EndMinute: 60}}},
+		{Windows: []DayWindow{{Day: 8, StartMinute: 0, EndMinute: 60}}},
+		{Windows: []DayWindow{{Day: 1, StartMinute: 60, EndMinute: 60}}},
+		{Windows: []DayWindow{{Day: 1, StartMinute: 0, EndMinute: 1441}}},
+		{Windows: []DayWindow{{Day: 1, StartMinute: 0, EndMinute: 60}, {Day: 1, StartMinute: 0, EndMinute: 60}}},
+	} {
+		if err := c.Validate(); err == nil {
+			t.Fatalf("expected invalid calendar: %+v", c)
+		}
+	}
+}

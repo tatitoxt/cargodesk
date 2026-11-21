@@ -171,7 +171,18 @@ type Calendar struct {
 	Days        []int    `json:"days"`
 	StartMinute int      `json:"start_minute"`
 	EndMinute   int      `json:"end_minute"`
-	Holidays    []string `json:"holidays"` // YYYY-MM-DD, in the org timezone
+	// Windows optionally gives each weekday its own start/end minutes — e.g.
+	// a Saturday half-day. When non-empty it overrides days/start_minute/
+	// end_minute; days absent from windows are non-working.
+	Windows  []DayWindow `json:"windows,omitempty"`
+	Holidays []string    `json:"holidays"` // YYYY-MM-DD, in the org timezone
+}
+
+// DayWindow is one weekday's working window, in minutes after local midnight.
+type DayWindow struct {
+	Day         int `json:"day"`
+	StartMinute int `json:"start_minute"`
+	EndMinute   int `json:"end_minute"`
 }
 
 func (c Calendar) Validate() error {
@@ -182,11 +193,24 @@ func (c Calendar) Validate() error {
 		}
 		seen[d] = true
 	}
-	if len(c.Days) == 0 {
-		return fmt.Errorf("days must name at least one working day")
-	}
-	if c.StartMinute < 0 || c.EndMinute > 1440 || c.StartMinute >= c.EndMinute {
-		return fmt.Errorf("start_minute/end_minute must satisfy 0 <= start < end <= 1440")
+	if len(c.Windows) > 0 {
+		seen = map[int]bool{}
+		for _, w := range c.Windows {
+			if w.Day < 1 || w.Day > 7 || seen[w.Day] {
+				return fmt.Errorf("windows must name unique ISO weekdays 1-7, got %d", w.Day)
+			}
+			seen[w.Day] = true
+			if w.StartMinute < 0 || w.EndMinute > 1440 || w.StartMinute >= w.EndMinute {
+				return fmt.Errorf("window minutes must satisfy 0 <= start < end <= 1440")
+			}
+		}
+	} else {
+		if len(c.Days) == 0 {
+			return fmt.Errorf("days must name at least one working day")
+		}
+		if c.StartMinute < 0 || c.EndMinute > 1440 || c.StartMinute >= c.EndMinute {
+			return fmt.Errorf("start_minute/end_minute must satisfy 0 <= start < end <= 1440")
+		}
 	}
 	for _, h := range c.Holidays {
 		if _, err := time.Parse("2006-01-02", h); err != nil {
@@ -196,8 +220,26 @@ func (c Calendar) Validate() error {
 	return nil
 }
 
+// window returns the working window for d's ISO weekday, or false when d is
+// a non-working day (per-day windows take priority over the shared one).
+func (c Calendar) window(d time.Time) (int, int, bool) {
+	wd := isoWeekday(d)
+	if len(c.Windows) > 0 {
+		for _, w := range c.Windows {
+			if w.Day == wd {
+				return w.StartMinute, w.EndMinute, true
+			}
+		}
+		return 0, 0, false
+	}
+	if !contains(c.Days, wd) {
+		return 0, 0, false
+	}
+	return c.StartMinute, c.EndMinute, true
+}
+
 func (c Calendar) working(d time.Time) bool {
-	if !contains(c.Days, isoWeekday(d)) {
+	if _, _, ok := c.window(d); !ok {
 		return false
 	}
 	for _, h := range c.Holidays {
@@ -239,8 +281,9 @@ func DueAtBusiness(createdAt time.Time, hours int, c Calendar, loc *time.Locatio
 			cur = dayStart.AddDate(0, 0, 1)
 			continue
 		}
-		winStart := dayStart.Add(time.Duration(c.StartMinute) * time.Minute)
-		winEnd := dayStart.Add(time.Duration(c.EndMinute) * time.Minute)
+		startMin, endMin, _ := c.window(cur)
+		winStart := dayStart.Add(time.Duration(startMin) * time.Minute)
+		winEnd := dayStart.Add(time.Duration(endMin) * time.Minute)
 		if !cur.Before(winEnd) {
 			cur = dayStart.AddDate(0, 0, 1)
 			continue

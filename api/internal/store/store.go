@@ -339,9 +339,10 @@ func businessCalendar(ctx context.Context, q querier, orgID string) (*sla.Calend
 	var c sla.Calendar
 	var days []int16
 	var holidays []time.Time
-	err := q.QueryRow(ctx, `SELECT days, start_minute, end_minute, holidays FROM business_calendars
+	var windows json.RawMessage
+	err := q.QueryRow(ctx, `SELECT days, start_minute, end_minute, holidays, windows FROM business_calendars
 		WHERE organization_id = $1`, orgID).
-		Scan(&days, &c.StartMinute, &c.EndMinute, &holidays)
+		Scan(&days, &c.StartMinute, &c.EndMinute, &holidays, &windows)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -353,6 +354,9 @@ func businessCalendar(ctx context.Context, q querier, orgID string) (*sla.Calend
 	}
 	for _, h := range holidays {
 		c.Holidays = append(c.Holidays, h.Format("2006-01-02"))
+	}
+	if len(windows) > 0 && string(windows) != "null" {
+		_ = json.Unmarshal(windows, &c.Windows)
 	}
 	return &c, nil
 }
@@ -370,13 +374,18 @@ func (s *Store) SetBusinessCalendar(ctx context.Context, a Actor, c sla.Calendar
 	for i, d := range c.Days {
 		days[i] = int16(d)
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO business_calendars
-		(organization_id, days, start_minute, end_minute, holidays, updated_by, updated_at)
-		VALUES ($1, $2, $3, $4, $5::date[], $6, now())
+	windows, err := json.Marshal(c.Windows)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO business_calendars
+		(organization_id, days, start_minute, end_minute, holidays, windows, updated_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5::date[], $6, $7, now())
 		ON CONFLICT (organization_id) DO UPDATE SET days = EXCLUDED.days,
 		start_minute = EXCLUDED.start_minute, end_minute = EXCLUDED.end_minute,
-		holidays = EXCLUDED.holidays, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-		a.Org.ID, days, c.StartMinute, c.EndMinute, c.Holidays, a.UserID)
+		holidays = EXCLUDED.holidays, windows = EXCLUDED.windows,
+		updated_by = EXCLUDED.updated_by, updated_at = now()`,
+		a.Org.ID, days, c.StartMinute, c.EndMinute, c.Holidays, windows, a.UserID)
 	return err
 }
 

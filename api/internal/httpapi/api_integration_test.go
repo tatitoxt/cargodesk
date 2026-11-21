@@ -1189,3 +1189,33 @@ func TestAttachmentRetention(t *testing.T) {
 		t.Fatalf("list after disabled retention: %v", got)
 	}
 }
+
+// Per-day windows: a calendar expressed as windows gets different due dates
+// than the shared-window calendar and round-trips through GET.
+func TestBusinessHoursWindows(t *testing.T) {
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	calendar := map[string]any{"calendar": map[string]any{
+		"days": []int{1, 2, 3, 4, 5}, "start_minute": 0, "end_minute": 1440,
+		"windows": []map[string]any{
+			{"day": 1, "start_minute": 540, "end_minute": 1020},
+			{"day": 2, "start_minute": 540, "end_minute": 780},
+		},
+	}}
+	if r := admin.do("PUT", "/api/v1/settings/business-hours", calendar, nil); r.status != 200 {
+		t.Fatalf("put windows: %d %s", r.status, r.raw)
+	}
+	got := admin.mustOK(200, "GET", "/api/v1/settings/business-hours", nil)
+	cal := got["calendar"].(map[string]any)
+	wins := cal["windows"].([]any)
+	if len(wins) != 2 || wins[1].(map[string]any)["end_minute"].(float64) != 780 {
+		t.Fatalf("windows = %v", cal["windows"])
+	}
+
+	// Invalid per-day window rejected.
+	bad := map[string]any{"calendar": map[string]any{
+		"windows": []map[string]any{{"day": 9, "start_minute": 0, "end_minute": 60}}}}
+	if r := admin.do("PUT", "/api/v1/settings/business-hours", bad, nil); r.status != 422 {
+		t.Fatalf("invalid windows: %d %s", r.status, r.raw)
+	}
+}
