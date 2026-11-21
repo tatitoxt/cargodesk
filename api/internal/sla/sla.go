@@ -37,9 +37,10 @@ type Stage string
 const (
 	StageQuote    Stage = "quote"    // created -> quoted
 	StageSchedule Stage = "schedule" // accepted -> scheduled
+	StageTransit  Stage = "transit"  // in transit -> delivered
 )
 
-var Stages = []Stage{StageQuote, StageSchedule}
+var Stages = []Stage{StageQuote, StageSchedule, StageTransit}
 
 // DefaultPolicy is the default time-to-quote policy.
 func DefaultPolicy() Policy { return Policy{Low: 72, Normal: 24, High: 8, Urgent: 2} }
@@ -47,6 +48,10 @@ func DefaultPolicy() Policy { return Policy{Low: 72, Normal: 24, High: 8, Urgent
 // DefaultSchedulePolicy is the default time-to-schedule policy (accepted to
 // pickup scheduled) — looser than quoting but tighter than never.
 func DefaultSchedulePolicy() Policy { return Policy{Low: 96, Normal: 48, High: 24, Urgent: 8} }
+
+// DefaultTransitPolicy is the default time-in-transit policy (pickup to
+// delivered) — the loosest stage, freight timescales.
+func DefaultTransitPolicy() Policy { return Policy{Low: 168, Normal: 96, High: 48, Urgent: 24} }
 
 const maxHours = 24 * 30
 
@@ -111,7 +116,7 @@ func StatusOf(state workflow.State, dueAt time.Time, quotedAt *time.Time, now ti
 // and either its next action is due, its quote SLA is breached or — while
 // waiting to be scheduled — its schedule SLA is breached. The SQL filter in
 // the store package must match this definition.
-func Overdue(state workflow.State, nextActionAt *time.Time, dueAt time.Time, scheduleDueAt *time.Time, now time.Time) bool {
+func Overdue(state workflow.State, nextActionAt *time.Time, dueAt time.Time, scheduleDueAt, transitDueAt *time.Time, now time.Time) bool {
 	if state.Terminal() {
 		return false
 	}
@@ -121,7 +126,10 @@ func Overdue(state workflow.State, nextActionAt *time.Time, dueAt time.Time, sch
 	if state.AwaitingQuote() && !dueAt.After(now) {
 		return true
 	}
-	return state == workflow.Accepted && scheduleDueAt != nil && !scheduleDueAt.After(now)
+	if state == workflow.Accepted && scheduleDueAt != nil && !scheduleDueAt.After(now) {
+		return true
+	}
+	return state == workflow.InTransit && transitDueAt != nil && !transitDueAt.After(now)
 }
 
 // StatusOfSchedule reports the schedule-stage SLA status. scheduleDueAt is nil
@@ -168,9 +176,9 @@ func DueToday(t *time.Time, now time.Time, loc *time.Location) bool {
 // Calendar describes which minutes of a week count toward an SLA, in the
 // organization's timezone (days are ISO weekdays: 1 = Monday .. 7 = Sunday).
 type Calendar struct {
-	Days        []int    `json:"days"`
-	StartMinute int      `json:"start_minute"`
-	EndMinute   int      `json:"end_minute"`
+	Days        []int `json:"days"`
+	StartMinute int   `json:"start_minute"`
+	EndMinute   int   `json:"end_minute"`
 	// Windows optionally gives each weekday its own start/end minutes — e.g.
 	// a Saturday half-day. When non-empty it overrides days/start_minute/
 	// end_minute; days absent from windows are non-working.
@@ -299,4 +307,27 @@ func DueAtBusiness(createdAt time.Time, hours int, c Calendar, loc *time.Locatio
 		cur = winEnd
 	}
 	return createdAt.UTC()
+}
+
+// StatusOfTransit reports the transit-stage SLA status. transitDueAt is nil
+// for shipments that entered transit before the stage existed; deliveredAt is
+// when the shipment was delivered.
+func StatusOfTransit(state workflow.State, transitDueAt, deliveredAt *time.Time, now time.Time) Status {
+	if deliveredAt != nil {
+		if transitDueAt != nil && deliveredAt.After(*transitDueAt) {
+			return Missed
+		}
+		return Met
+	}
+	if state != workflow.InTransit || transitDueAt == nil {
+		return NotApplied
+	}
+	switch {
+	case !now.Before(*transitDueAt):
+		return Breached
+	case transitDueAt.Sub(now) <= atRiskWindow:
+		return AtRisk
+	default:
+		return OnTrack
+	}
 }

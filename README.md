@@ -35,16 +35,18 @@ explains how it got there.
   open quote for `accepted`, pickup time and carrier for `scheduled`, and
   delivery evidence (received by, delivered at — not in the future) for `delivered`.
 - **Ownership and next action**: owner, priority and next-action date/note per request.
-- **Internal SLA**: per-priority policies for two stages — "time to quote"
-  (defaults: urgent 2h, high 8h, normal 24h, low 72h) and "time to
+- **Internal SLA**: per-priority policies for three stages — "time to quote"
+  (defaults: urgent 2h, high 8h, normal 24h, low 72h), "time to
   schedule" once a quote is accepted (defaults: urgent 8h, high 24h,
-  normal 48h, low 96h). Statuses are shown as
-  on track / at risk (last 2h) / breached / met / missed per stage
-  (`sla_status` and `schedule_sla_status`); a breached schedule SLA flags
-  the board's overdue filter. `PUT /api/v1/settings/sla` accepts `hours`
-  and/or `schedule_hours`.
+  normal 48h, low 96h) and "time in transit" from pickup to delivery
+  (defaults: urgent 24h, high 48h, normal 96h, low 168h). Statuses are
+  shown as on track / at risk (last 2h) / breached / met / missed per stage
+  (`sla_status`, `schedule_sla_status`, `transit_sla_status`); any breached
+  stage flags the board's overdue filter. `PUT /api/v1/settings/sla` accepts
+  `hours`, `schedule_hours` and/or `transit_hours`.
 - **Business-hours calendar**: admins can set a weekly working window
-  (ISO weekdays + start/end minute, in the org timezone) plus holiday dates.
+  (ISO weekdays + start/end minute, in the org timezone) — or per-day
+  `windows` (e.g. a Saturday half-day) — plus holiday dates.
   With a calendar, SLA deadlines count business minutes — a request opened
   Friday 16:00 under a Mon-Fri 9-17 calendar gets its remaining hours on
   Monday. Without one, SLAs count wall-clock hours.
@@ -265,8 +267,7 @@ No external API keys are used or required.
 
 ## Roadmap
 
-1. SLA for the remaining stages (e.g. time in transit) and per-day business windows.
-2. Email/WhatsApp channels for the existing webhook pipeline.
+1. Email/WhatsApp channels for the existing webhook pipeline.
 
 ## License
 

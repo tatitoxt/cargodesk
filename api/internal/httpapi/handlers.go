@@ -390,7 +390,12 @@ func (s *Server) handleGetSLA(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "timezone": a.Org.Timezone})
+	tp, err := s.cfg.Store.TransitSLAPolicy(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "transit_hours": tp, "timezone": a.Org.Timezone})
 }
 
 func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
@@ -402,12 +407,13 @@ func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Hours         *sla.Policy `json:"hours"`
 		ScheduleHours *sla.Policy `json:"schedule_hours"`
+		TransitHours  *sla.Policy `json:"transit_hours"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	if in.Hours == nil && in.ScheduleHours == nil {
-		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", "hours or schedule_hours is required",
+	if in.Hours == nil && in.ScheduleHours == nil && in.TransitHours == nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", "hours, schedule_hours or transit_hours is required",
 			map[string]any{"fields": []domain.FieldError{{Field: "hours", Message: "at least one policy is required"}}})
 		return
 	}
@@ -423,6 +429,12 @@ func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.TransitHours != nil {
+		if err := s.cfg.Store.SetTransitSLAPolicy(r.Context(), a, *in.TransitHours); err != nil {
+			s.writeDomainError(w, r, err)
+			return
+		}
+	}
 	p, err := s.cfg.Store.SLAPolicy(r.Context(), a)
 	if err != nil {
 		s.internal(w, r, err)
@@ -433,7 +445,12 @@ func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "timezone": a.Org.Timezone})
+	tp, err := s.cfg.Store.TransitSLAPolicy(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "transit_hours": tp, "timezone": a.Org.Timezone})
 }
 
 // idempotent replays the stored response when a request repeats an

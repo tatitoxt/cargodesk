@@ -80,22 +80,26 @@ func TestOverdue(t *testing.T) {
 		next  *time.Time
 		due   time.Time
 		sdue  *time.Time
+		tdue  *time.Time
 		want  bool
 	}{
-		{"next action passed", workflow.Scheduled, &past, future, nil, true},
-		{"next action exactly now", workflow.Quoted, ptr(now), future, nil, true},
-		{"next action in future, sla ok", workflow.New, &future, future, nil, false},
-		{"sla breached while awaiting quote", workflow.NeedsInfo, nil, past, nil, true},
-		{"sla breach ignored after quote", workflow.Quoted, nil, past, nil, false},
-		{"terminal never overdue", workflow.Delivered, &past, past, nil, false},
-		{"cancelled never overdue", workflow.Cancelled, &past, past, nil, false},
-		{"schedule sla breached while accepted", workflow.Accepted, nil, future, &past, true},
-		{"schedule sla pending while accepted", workflow.Accepted, nil, future, &future, false},
-		{"no schedule sla for legacy rows", workflow.Accepted, nil, future, nil, false},
-		{"schedule sla ignored in other states", workflow.InTransit, nil, future, &past, false},
+		{"next action passed", workflow.Scheduled, &past, future, nil, nil, true},
+		{"next action exactly now", workflow.Quoted, ptr(now), future, nil, nil, true},
+		{"next action in future, sla ok", workflow.New, &future, future, nil, nil, false},
+		{"sla breached while awaiting quote", workflow.NeedsInfo, nil, past, nil, nil, true},
+		{"sla breach ignored after quote", workflow.Quoted, nil, past, nil, nil, false},
+		{"terminal never overdue", workflow.Delivered, &past, past, nil, nil, false},
+		{"cancelled never overdue", workflow.Cancelled, &past, past, nil, nil, false},
+		{"schedule sla breached while accepted", workflow.Accepted, nil, future, &past, nil, true},
+		{"schedule sla pending while accepted", workflow.Accepted, nil, future, &future, nil, false},
+		{"no schedule sla for legacy rows", workflow.Accepted, nil, future, nil, nil, false},
+		{"schedule sla ignored in other states", workflow.InTransit, nil, future, &past, nil, false},
+		{"transit sla breached in transit", workflow.InTransit, nil, future, nil, &past, true},
+		{"transit sla pending in transit", workflow.InTransit, nil, future, nil, &future, false},
+		{"transit sla ignored in other states", workflow.Scheduled, nil, future, nil, &past, false},
 	}
 	for _, c := range cases {
-		if got := Overdue(c.state, c.next, c.due, c.sdue, now); got != c.want {
+		if got := Overdue(c.state, c.next, c.due, c.sdue, c.tdue, now); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}

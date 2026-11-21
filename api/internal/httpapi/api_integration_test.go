@@ -1219,3 +1219,51 @@ func TestBusinessHoursWindows(t *testing.T) {
 		t.Fatalf("invalid windows: %d %s", r.status, r.raw)
 	}
 }
+
+func TestTransitSLA(t *testing.T) {
+	e := newEnv(t, true)
+	c := e.login(seed.CoordinatorA)
+	admin := e.login(seed.AdminA)
+
+	admin.mustOK(200, "PUT", "/api/v1/settings/sla", map[string]any{
+		"transit_hours": map[string]int{"low": 168, "normal": 96, "high": 4, "urgent": 24}})
+	got := admin.mustOK(200, "GET", "/api/v1/settings/sla", nil)
+	if got["transit_hours"].(map[string]any)["high"] != 4.0 {
+		t.Fatalf("transit policy %v", got)
+	}
+
+	sh := c.mustOK(201, "POST", "/api/v1/shipments", createBody("Transit SLA Account"))
+	p := "/api/v1/shipments/" + sh["id"].(string)
+	for _, tr := range []map[string]any{
+		{"to": "quoted", "quote": map[string]any{"amount_cents": 50000, "currency": "USD"}},
+		{"to": "accepted"},
+		{"to": "scheduled", "pickup_at": testdb.Now.Add(24 * time.Hour), "carrier": "Carrier X"},
+		{"to": "in_transit"},
+	} {
+		tr["version"] = ver(sh)
+		sh = c.mustOK(200, "POST", p+"/transitions", tr)
+	}
+	if sh["transit_sla_status"] != "on_track" || sh["in_transit_at"] == nil {
+		t.Fatalf("in transit %v", sh)
+	}
+	// createBody uses priority "high" -> 4h transit window from in_transit_at.
+	tdue, _ := time.Parse(time.RFC3339, sh["transit_due_at"].(string))
+	it, _ := time.Parse(time.RFC3339, sh["in_transit_at"].(string))
+	if !tdue.Equal(it.Add(4 * time.Hour)) {
+		t.Fatalf("transit_due_at = %v, want %v", tdue, it.Add(4*time.Hour))
+	}
+
+	e.advance(5 * time.Hour)
+	c = e.login(seed.CoordinatorA) // session expiry under the advanced clock
+	sh = c.mustOK(200, "GET", p, nil)
+	if sh["transit_sla_status"] != "breached" || sh["overdue"] != true {
+		t.Fatalf("breached %v", sh)
+	}
+
+	// Delivering after the deadline records a miss.
+	sh = c.mustOK(200, "POST", p+"/transitions", map[string]any{"version": ver(sh), "to": "delivered",
+		"evidence": map[string]any{"delivered_at": testdb.Now.Add(5*time.Hour), "received_by": "Receiver", "note": "ok"}})
+	if sh["transit_sla_status"] != "missed" || sh["delivered_at"] == nil {
+		t.Fatalf("missed %v", sh)
+	}
+}

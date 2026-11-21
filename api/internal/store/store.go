@@ -240,6 +240,11 @@ func (s *Store) ScheduleSLAPolicy(ctx context.Context, a Actor) (sla.Policy, err
 	return slaPolicy(ctx, s.pool, a.Org.ID, sla.StageSchedule)
 }
 
+// TransitSLAPolicy returns the organization's time-in-transit policy.
+func (s *Store) TransitSLAPolicy(ctx context.Context, a Actor) (sla.Policy, error) {
+	return slaPolicy(ctx, s.pool, a.Org.ID, sla.StageTransit)
+}
+
 type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -248,8 +253,11 @@ type querier interface {
 
 func slaPolicy(ctx context.Context, q querier, orgID string, stage sla.Stage) (sla.Policy, error) {
 	p := sla.DefaultPolicy()
-	if stage == sla.StageSchedule {
+	switch stage {
+	case sla.StageSchedule:
 		p = sla.DefaultSchedulePolicy()
+	case sla.StageTransit:
+		p = sla.DefaultTransitPolicy()
 	}
 	rows, err := q.Query(ctx, `SELECT priority, hours FROM sla_policies WHERE organization_id = $1 AND stage = $2`, orgID, string(stage))
 	if err != nil {
@@ -277,6 +285,11 @@ func (s *Store) SetSLAPolicy(ctx context.Context, a Actor, p sla.Policy) error {
 // SetScheduleSLAPolicy replaces the schedule-stage policy.
 func (s *Store) SetScheduleSLAPolicy(ctx context.Context, a Actor, p sla.Policy) error {
 	return s.setSLAStagePolicy(ctx, a, sla.StageSchedule, p, "schedule_hours")
+}
+
+// SetTransitSLAPolicy replaces the transit-stage policy.
+func (s *Store) SetTransitSLAPolicy(ctx context.Context, a Actor, p sla.Policy) error {
+	return s.setSLAStagePolicy(ctx, a, sla.StageTransit, p, "transit_hours")
 }
 
 func (s *Store) setSLAStagePolicy(ctx context.Context, a Actor, stage sla.Stage, p sla.Policy, field string) error {
