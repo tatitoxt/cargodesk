@@ -615,3 +615,61 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 }
+
+// --- member management (admins) ---
+
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can manage members", nil)
+		return
+	}
+	var in struct {
+		Email       string      `json:"email"`
+		DisplayName string      `json:"display_name"`
+		Role        domain.Role `json:"role"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	u, err := s.cfg.Store.CreateUser(r.Context(), a, in.Email, in.DisplayName, in.Role)
+	if err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"user": u})
+}
+
+func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can manage members", nil)
+		return
+	}
+	var in struct {
+		Role        *domain.Role `json:"role"`
+		DisplayName *string      `json:"display_name"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	u, err := s.cfg.Store.UpdateUser(r.Context(), a, r.PathValue("id"), in.Role, in.DisplayName)
+	if err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can manage members", nil)
+		return
+	}
+	if err := s.cfg.Store.DeleteUser(r.Context(), a, r.PathValue("id")); err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

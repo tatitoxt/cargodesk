@@ -73,6 +73,11 @@ explains how it got there.
   `MAX_ATTACHMENT_BYTES` (default 10 MiB) and each file's SHA-256 is stored with
   the row. Uploads and deletes write audit events.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
+- **Member management**: admins create, edit and remove organization members via
+  `POST /api/v1/users`, `PATCH /api/v1/users/{id}` and `DELETE /api/v1/users/{id}`;
+  emails are unique case-insensitively (409 `email_taken`), demoting or removing
+  the last admin is rejected (409 `last_admin`), and deleting a member kills
+  their sessions immediately.
 - **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
 - **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
 - **Optimistic concurrency**: mutations carry a `version`; stale writes get `409`
@@ -239,12 +244,12 @@ No external API keys are used or required.
   weekly window (no per-day windows, no half-days).
 - Delivery "evidence" is a text record (received by, time, note); no file uploads.
 - Notifications are outbound webhooks only (signed with HMAC); no email/WhatsApp, no maps/GPS, no customer portal.
-- Organizations and users are created by the seed only; there is no admin UI for them.
+- Organizations are created by the seed only; member management is API-only for now (no admin UI).
 - No load testing or security audit has been performed.
 
 ## Roadmap
 
-2. Organization and user management for admins.
+2. Member-management UI in the web app (the API is in place).
 3. SLA for later stages (e.g. time to schedule) and per-day business windows.
 4. Email/WhatsApp channels for the existing webhook pipeline.
 5. Attachments for delivery evidence with retention rules.

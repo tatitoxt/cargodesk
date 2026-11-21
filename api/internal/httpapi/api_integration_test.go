@@ -950,3 +950,94 @@ func TestWebhookEventFilter(t *testing.T) {
 		t.Fatalf("GET webhook events: %d %s", r.status, r.raw)
 	}
 }
+
+// Admin member management: create, role-change and delete org users with the
+// last-admin guard and tenant isolation.
+func TestMemberManagement(t *testing.T) {
+	e := newEnv(t, true)
+	viewer := e.login(seed.ViewerA)
+	coord := e.login(seed.CoordinatorA)
+	admin := e.login(seed.AdminA)
+	other := e.login(seed.CoordinatorB)
+
+	body := map[string]any{"email": "new.coord@cargodesk.example", "display_name": "New Coord", "role": "coordinator"}
+	if r := viewer.do("POST", "/api/v1/users", body, nil); r.status != 403 {
+		t.Fatalf("viewer create: %d", r.status)
+	}
+	if r := coord.do("POST", "/api/v1/users", body, nil); r.status != 403 {
+		t.Fatalf("coordinator create: %d", r.status)
+	}
+	if r := admin.do("POST", "/api/v1/users",
+		map[string]any{"email": "no-at-sign", "display_name": "X", "role": "superuser"}, nil); r.status != 422 {
+		t.Fatalf("bad fields: %d %s", r.status, r.raw)
+	}
+	created := admin.mustOK(201, "POST", "/api/v1/users", body)
+	newUser := created["user"].(map[string]any)
+	newID := newUser["id"].(string)
+	if newUser["role"] != "coordinator" || newUser["email"] != "new.coord@cargodesk.example" {
+		t.Fatalf("user = %v", newUser)
+	}
+	if r := admin.do("POST", "/api/v1/users", body, nil); r.status != 409 {
+		t.Fatalf("duplicate email: %d, want 409", r.status)
+	}
+
+	// The new member appears in the roster and can sign in.
+	roster := admin.mustOK(200, "GET", "/api/v1/users", nil)
+	found := false
+	for _, u := range roster["users"].([]any) {
+		if u.(map[string]any)["id"] == newID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("new member missing from roster")
+	}
+	logged := e.login(newID)
+	me := logged.mustOK(200, "GET", "/api/v1/me", nil)
+	if me["role"] != "coordinator" {
+		t.Fatalf("new member role = %v", me["role"])
+	}
+
+	// Demoting the only admin is rejected; with a second admin in place,
+	// demoting that second admin succeeds (AdminA remains an admin).
+	if r := admin.do("PATCH", "/api/v1/users/"+seed.AdminA,
+		map[string]any{"role": "viewer"}, nil); r.status != 409 {
+		t.Fatalf("demote last admin: %d, want 409", r.status)
+	}
+	second := admin.mustOK(201, "POST", "/api/v1/users",
+		map[string]any{"email": "second.admin@cargodesk.example", "display_name": "Second Admin", "role": "admin"})
+	secondID := second["user"].(map[string]any)["id"].(string)
+	updated := admin.mustOK(200, "PATCH", "/api/v1/users/"+secondID, map[string]any{"role": "viewer"})
+	if updated["user"].(map[string]any)["role"] != "viewer" {
+		t.Fatalf("demoted role = %v", updated["user"])
+	}
+
+	// Tenant isolation + unknown id.
+	if r := admin.do("PATCH", "/api/v1/users/"+seed.CoordinatorB,
+		map[string]any{"role": "admin"}, nil); r.status != 404 {
+		t.Fatalf("cross-tenant patch: %d, want 404", r.status)
+	}
+	if r := admin.do("DELETE", "/api/v1/users/00000000-0000-4000-b000-00000000dead", nil, nil); r.status != 404 {
+		t.Fatalf("delete unknown: %d, want 404", r.status)
+	}
+	r := other.do("GET", "/api/v1/users", nil, nil)
+	if r.status != 200 {
+		t.Fatalf("other tenant roster: %d", r.status)
+	}
+	for _, u := range r.body["users"].([]any) {
+		if u.(map[string]any)["id"] == newID {
+			t.Fatal("cross-tenant member leak")
+		}
+	}
+
+	// Deleting a member kills their sessions.
+	admin.do("DELETE", "/api/v1/users/"+secondID, nil, nil)
+	if r := admin.do("DELETE", "/api/v1/users/"+secondID, nil, nil); r.status != 404 {
+		t.Fatalf("re-delete: %d, want 404", r.status)
+	}
+	logged = e.login(newID)
+	admin.do("DELETE", "/api/v1/users/"+newID, nil, nil)
+	if r := logged.do("GET", "/api/v1/me", nil, nil); r.status != 401 {
+		t.Fatalf("deleted member session: %d, want 401", r.status)
+	}
+}

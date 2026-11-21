@@ -67,6 +67,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	m.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
 	m.HandleFunc("GET /api/v1/users", s.authed(s.handleUsers))
+	m.HandleFunc("POST /api/v1/users", s.authed(s.handleCreateUser))
+	m.HandleFunc("PATCH /api/v1/users/{id}", s.authed(s.handleUpdateUser))
+	m.HandleFunc("DELETE /api/v1/users/{id}", s.authed(s.handleDeleteUser))
 	m.HandleFunc("GET /api/v1/shipments", s.authed(s.handleList))
 	m.HandleFunc("POST /api/v1/shipments", s.editor(s.idempotent("create", s.handleCreate)))
 	m.HandleFunc("GET /api/v1/shipments/{id}", s.authed(s.handleGet))
@@ -255,6 +258,11 @@ func (s *Server) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 			map[string]any{"current_state": re.From, "requested_state": re.To, "fields": re.Fields})
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "not_found", "not found", nil)
+	case errors.Is(err, store.ErrEmailTaken):
+		writeError(w, r, http.StatusConflict, "email_taken", "a user with this email already exists", nil)
+	case errors.Is(err, store.ErrLastAdmin):
+		writeError(w, r, http.StatusConflict, "last_admin",
+			"the organization must keep at least one admin", nil)
 	case errors.Is(err, store.ErrClosed):
 		writeError(w, r, http.StatusConflict, "shipment_closed", "shipment is in a terminal state", nil)
 	default:
