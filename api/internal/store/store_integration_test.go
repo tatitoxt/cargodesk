@@ -145,7 +145,7 @@ func TestTenantIsolation(t *testing.T) {
 	if !errors.As(err, &ve) {
 		t.Fatalf("assigning another tenant's user: %v, want validation error", err)
 	}
-	list, err := st.ListShipments(ctx, b, store.ListFilter{}, testdb.Now)
+	list, _, err := st.ListShipments(ctx, b, store.ListFilter{}, testdb.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestSeedDataIsSynthetic(t *testing.T) {
 	st, a, b := setup(t)
 	var dump []any
 	for _, act := range []store.Actor{a, b} {
-		list, err := st.ListShipments(ctx, act, store.ListFilter{}, testdb.Now)
+		list, _, err := st.ListShipments(ctx, act, store.ListFilter{}, testdb.Now)
 		if err != nil {
 			t.Fatal(err)
 		}

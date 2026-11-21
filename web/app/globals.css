@@ -49,3 +49,4 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .users { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .users button { text-align: left; background: #fff; color: var(--fg); border-color: var(--line); padding: 12px; }
 .users button:hover { border-color: var(--accent); }
+.pagination { display: flex; gap: 12px; align-items: center; justify-content: flex-end; padding: 10px 4px; }

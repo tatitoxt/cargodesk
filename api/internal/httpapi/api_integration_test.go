@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -294,6 +295,41 @@ func TestOverdueAndFilters(t *testing.T) {
 	}
 	if r := c.do("GET", "/api/v1/shipments?state=bogus", nil, nil); r.status != 422 {
 		t.Fatalf("bad state filter: %d", r.status)
+	}
+	for _, bad := range []string{"?limit=0", "?limit=501", "?limit=abc", "?offset=-1", "?offset=x"} {
+		if r := c.do("GET", "/api/v1/shipments"+bad, nil, nil); r.status != 422 {
+			t.Fatalf("bad paging param %q: %d", bad, r.status)
+		}
+	}
+	// Pages are disjoint, complete and stable (id tiebreak), and the body
+	// reports the unpaged total.
+	seen := map[string]bool{}
+	offset := 0
+	for {
+		r := c.mustOK(200, "GET", fmt.Sprintf("/api/v1/shipments?limit=3&offset=%d", offset), nil)
+		if r["total"].(float64) != 8 {
+			t.Fatalf("total = %v, want 8", r["total"])
+		}
+		items := r["items"].([]any)
+		if len(items) == 0 {
+			break
+		}
+		for _, it := range items {
+			ref := it.(map[string]any)["reference"].(string)
+			if seen[ref] {
+				t.Fatalf("row %s appears on two pages", ref)
+			}
+			seen[ref] = true
+		}
+		offset += len(items)
+	}
+	if len(seen) != 8 {
+		t.Fatalf("paging saw %d rows, want 8", len(seen))
+	}
+	// Paging composes with filters: overdue=true pages over 2 rows only.
+	r := c.mustOK(200, "GET", "/api/v1/shipments?overdue=true&limit=1&offset=1", nil)
+	if r["total"].(float64) != 2 || len(r["items"].([]any)) != 1 {
+		t.Fatalf("filtered page = total %v, %d items", r["total"], len(r["items"].([]any)))
 	}
 	// A new request becomes overdue once its quote SLA (8h for high) passes.
 	sh := c.mustOK(201, "POST", "/api/v1/shipments", createBody("Late"))

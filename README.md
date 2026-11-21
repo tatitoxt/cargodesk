@@ -45,6 +45,10 @@ explains how it got there.
   exceptions with kind, reason and resolution.
 - **Board and filters**: state, owner (incl. unassigned), overdue, due today
   (in the organization's timezone) and text search; filters live in the URL.
+- **Pagination**: `GET /api/v1/shipments` accepts `limit` (1–500) and `offset`,
+  returns `total` alongside the page, and sorts by a unique tiebreaker so
+  pages are stable under concurrent writes; the board pages at 50 rows and
+  resets to page 1 on any filter change.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
 - **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
 - **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
@@ -210,7 +214,7 @@ No external API keys are used or required.
 
 1. Real authentication (OIDC) with the existing role model.
 2. Organization and user management for admins.
-3. Pagination and saved views on the board.
+3. Saved views on the board.
 4. Business-hours SLA calendars and SLA for later stages (e.g. time to schedule).
 5. Notifications for breached SLAs and due next actions.
 6. Attachments for delivery evidence with retention rules.

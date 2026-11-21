@@ -126,6 +126,20 @@ func parseFilter(r *http.Request, a store.Actor) (store.ListFilter, error) {
 	default:
 		return f, &domain.ValidationError{Fields: []domain.FieldError{{Field: "due", Message: "must be \"today\""}}}
 	}
+	if raw := q.Get("limit"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 1 || v > 500 {
+			return f, &domain.ValidationError{Fields: []domain.FieldError{{Field: "limit", Message: "must be an integer between 1 and 500"}}}
+		}
+		f.Limit = v
+	}
+	if raw := q.Get("offset"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			return f, &domain.ValidationError{Fields: []domain.FieldError{{Field: "offset", Message: "must be a non-negative integer"}}}
+		}
+		f.Offset = v
+	}
 	return f, nil
 }
 
@@ -144,13 +158,15 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	items, err := s.cfg.Store.ListShipments(r.Context(), a, f, now)
+	items, total, err := s.cfg.Store.ListShipments(r.Context(), a, f, now)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items, "count": len(items), "now": now, "timezone": a.Org.Timezone,
+		"items": items, "count": len(items), "total": total,
+		"limit": f.Limit, "offset": f.Offset,
+		"now": now, "timezone": a.Org.Timezone,
 	})
 }
 
@@ -286,7 +302,8 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.Limit = 500
-	items, err := s.cfg.Store.ListShipments(r.Context(), a, f, s.now())
+	f.Offset = 0 // export always starts from the first row
+	items, _, err := s.cfg.Store.ListShipments(r.Context(), a, f, s.now())
 	if err != nil {
 		s.internal(w, r, err)
 		return

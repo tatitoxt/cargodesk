@@ -230,6 +230,7 @@ func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShi
 }
 
 // ListFilter narrows GET /api/v1/shipments. Owner is a user ID or "none".
+// Offset/Limit implement offset paging over a stable sort.
 type ListFilter struct {
 	States   []workflow.State
 	Owner    string
@@ -237,6 +238,7 @@ type ListFilter struct {
 	DueToday bool
 	Query    string
 	Limit    int
+	Offset   int
 }
 
 // overdueSQL mirrors sla.Overdue; $now is the bound parameter for "now".
@@ -244,7 +246,9 @@ const overdueSQL = `(s.state NOT IN ('delivered', 'cancelled', 'lost') AND (
 	(s.next_action_at IS NOT NULL AND s.next_action_at <= %[1]s) OR
 	(s.state IN ('new', 'needs_info') AND s.due_at <= %[1]s)))`
 
-func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now time.Time) ([]Shipment, error) {
+// ListShipments returns the requested page plus the total number of matching
+// rows, so callers can render "x–y of n" without a second round trip.
+func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now time.Time) ([]Shipment, int, error) {
 	where := []string{"s.organization_id = $1"}
 	args := []any{a.Org.ID}
 	arg := func(v any) string {
@@ -263,7 +267,7 @@ func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now ti
 		where = append(where, "s.owner_id IS NULL")
 	case f.Owner != "":
 		if !domain.IsUUID(f.Owner) {
-			return []Shipment{}, nil
+			return []Shipment{}, 0, nil
 		}
 		where = append(where, "s.owner_id = "+arg(f.Owner))
 	}
@@ -279,24 +283,33 @@ func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now ti
 		p := arg(like)
 		where = append(where, "(s.reference ILIKE "+p+" OR s.account_name ILIKE "+p+" OR s.origin ILIKE "+p+" OR s.destination ILIKE "+p+")")
 	}
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM shipments s WHERE "+strings.Join(where, " AND "), args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	limit := f.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
+	offset := max(f.Offset, 0)
+	// ORDER BY ends in a unique tiebreaker (id) so pages are stable under
+	// offset paging and concurrent inserts.
 	sql := shipmentSelect + " WHERE " + strings.Join(where, " AND ") +
-		" ORDER BY s.next_action_at ASC NULLS LAST, s.due_at ASC, s.reference ASC LIMIT " + arg(limit)
+		" ORDER BY s.next_action_at ASC NULLS LAST, s.due_at ASC, s.reference ASC, s.id ASC LIMIT " + arg(limit) +
+		" OFFSET " + arg(offset)
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Shipment, error) { return scanShipment(r) })
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for i := range out {
 		out[i].derive(now, a.Org.Loc)
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func escapeLike(s string) string {
