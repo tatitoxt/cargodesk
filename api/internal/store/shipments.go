@@ -32,6 +32,9 @@ type Shipment struct {
 	NextActionNote string         `json:"next_action_note"`
 	DueAt          time.Time      `json:"due_at"`
 	QuotedAt       *time.Time     `json:"quoted_at"`
+	AcceptedAt     *time.Time     `json:"accepted_at"`
+	ScheduledAt    *time.Time     `json:"scheduled_at"`
+	ScheduleDueAt  *time.Time     `json:"schedule_due_at"`
 	PickupAt       *time.Time     `json:"pickup_at"`
 	Carrier        *string        `json:"carrier"`
 	DeliveredAt    *time.Time     `json:"delivered_at"`
@@ -45,6 +48,7 @@ type Shipment struct {
 
 	// Derived at read time from the clock and the operating timezone.
 	SLAStatus          sla.Status       `json:"sla_status"`
+	ScheduleSLAStatus  sla.Status       `json:"schedule_sla_status"`
 	Overdue            bool             `json:"overdue"`
 	DueToday           bool             `json:"due_today"`
 	AllowedTransitions []workflow.State `json:"allowed_transitions"`
@@ -52,7 +56,8 @@ type Shipment struct {
 
 func (sh *Shipment) derive(now time.Time, loc *time.Location) {
 	sh.SLAStatus = sla.StatusOf(sh.State, sh.DueAt, sh.QuotedAt, now)
-	sh.Overdue = sla.Overdue(sh.State, sh.NextActionAt, sh.DueAt, now)
+	sh.ScheduleSLAStatus = sla.StatusOfSchedule(sh.State, sh.ScheduleDueAt, sh.ScheduledAt, now)
+	sh.Overdue = sla.Overdue(sh.State, sh.NextActionAt, sh.DueAt, sh.ScheduleDueAt, now)
 	sh.DueToday = sla.DueToday(sh.NextActionAt, now, loc)
 	sh.AllowedTransitions = workflow.Allowed(sh.State)
 }
@@ -97,7 +102,8 @@ type ShipmentDetail struct {
 
 const shipmentSelect = `SELECT s.id, s.reference, s.account_name, s.contact_label, s.origin, s.destination,
 	s.cargo_type, to_char(s.required_date, 'YYYY-MM-DD'), s.notes, s.state, s.priority, s.owner_id, u.display_name,
-	s.next_action_at, s.next_action_note, s.due_at, s.quoted_at, s.pickup_at, s.carrier, s.delivered_at,
+	s.next_action_at, s.next_action_note, s.due_at, s.quoted_at, s.accepted_at, s.scheduled_at, s.schedule_due_at,
+	s.pickup_at, s.carrier, s.delivered_at,
 	s.received_by, s.delivery_note, s.closed_reason,
 	(SELECT count(*) FROM exceptions e WHERE e.organization_id = s.organization_id AND e.shipment_id = s.id AND e.resolved_at IS NULL),
 	s.version, s.created_at, s.updated_at
@@ -108,7 +114,8 @@ func scanShipment(r pgx.Row) (Shipment, error) {
 	var ownerID, ownerName *string
 	err := r.Scan(&sh.ID, &sh.Reference, &sh.AccountName, &sh.ContactLabel, &sh.Origin, &sh.Destination,
 		&sh.CargoType, &sh.RequiredDate, &sh.Notes, &sh.State, &sh.Priority, &ownerID, &ownerName,
-		&sh.NextActionAt, &sh.NextActionNote, &sh.DueAt, &sh.QuotedAt, &sh.PickupAt, &sh.Carrier, &sh.DeliveredAt,
+		&sh.NextActionAt, &sh.NextActionNote, &sh.DueAt, &sh.QuotedAt, &sh.AcceptedAt, &sh.ScheduledAt, &sh.ScheduleDueAt,
+		&sh.PickupAt, &sh.Carrier, &sh.DeliveredAt,
 		&sh.ReceivedBy, &sh.DeliveryNote, &sh.ClosedReason, &sh.OpenExceptions,
 		&sh.Version, &sh.CreatedAt, &sh.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -232,7 +239,7 @@ func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShi
 			WHERE id = $1 RETURNING reference_prefix, next_reference - 1`, a.Org.ID).Scan(&prefix, &n); err != nil {
 			return err
 		}
-		due, err := dueAt(ctx, tx, a, now, in.Priority)
+		due, err := dueAtStage(ctx, tx, a, now, in.Priority, sla.StageQuote)
 		if err != nil {
 			return err
 		}
@@ -283,7 +290,8 @@ type ListFilter struct {
 // overdueSQL mirrors sla.Overdue; $now is the bound parameter for "now".
 const overdueSQL = `(s.state NOT IN ('delivered', 'cancelled', 'lost') AND (
 	(s.next_action_at IS NOT NULL AND s.next_action_at <= %[1]s) OR
-	(s.state IN ('new', 'needs_info') AND s.due_at <= %[1]s)))`
+	(s.state IN ('new', 'needs_info') AND s.due_at <= %[1]s) OR
+	(s.state = 'accepted' AND s.schedule_due_at IS NOT NULL AND s.schedule_due_at <= %[1]s)))`
 
 // ListShipments returns the requested page plus the total number of matching
 // rows, so callers can render "x–y of n" without a second round trip.
@@ -428,6 +436,7 @@ type lockedShipment struct {
 	NextActionAt   *time.Time
 	NextActionNote string
 	CreatedAt      time.Time
+	AcceptedAt     *time.Time
 }
 
 // lockShipment selects the row FOR UPDATE and checks the client's version.
@@ -517,9 +526,17 @@ func (s *Store) Transition(ctx context.Context, a Actor, id string, version int,
 				return err
 			}
 			data["quote_id"] = qid
+			set += ", accepted_at = COALESCE(accepted_at, $4)"
+			due, err := dueAtStage(ctx, tx, a, now, l.Priority, sla.StageSchedule)
+			if err != nil {
+				return err
+			}
+			add("schedule_due_at", due)
+			data["schedule_due_at"] = due.Format("2006-01-02T15:04:05Z07:00")
 		case workflow.Scheduled:
 			add("pickup_at", in.PickupAt)
 			add("carrier", strings.TrimSpace(in.Carrier))
+			set += ", scheduled_at = COALESCE(scheduled_at, $4)"
 			data["pickup_at"], data["carrier"] = in.PickupAt, strings.TrimSpace(in.Carrier)
 		case workflow.Delivered:
 			add("delivered_at", in.Evidence.DeliveredAt)
@@ -600,12 +617,20 @@ func (s *Store) Assign(ctx context.Context, a Actor, id string, in domain.Assign
 		set := "owner_id = $5, priority = $6, next_action_at = $7, next_action_note = $8"
 		args := []any{owner, priority, next, note}
 		if priority != l.Priority {
-			due, err := dueAt(ctx, tx, a, l.CreatedAt, priority)
+			due, err := dueAtStage(ctx, tx, a, l.CreatedAt, priority, sla.StageQuote)
 			if err != nil {
 				return err
 			}
 			set += ", due_at = $9"
 			args = append(args, due)
+			if l.State == workflow.Accepted && l.AcceptedAt != nil {
+				sdue, err := dueAtStage(ctx, tx, a, *l.AcceptedAt, priority, sla.StageSchedule)
+				if err != nil {
+					return err
+				}
+				set += fmt.Sprintf(", schedule_due_at = $%d", len(args)+5)
+				args = append(args, sdue)
+			}
 		}
 		if err := bump(ctx, tx, a, id, in.Version, now, set, args...); err != nil {
 			return err

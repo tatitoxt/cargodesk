@@ -1041,3 +1041,53 @@ func TestMemberManagement(t *testing.T) {
 		t.Fatalf("deleted member session: %d, want 401", r.status)
 	}
 }
+
+func TestScheduleSLA(t *testing.T) {
+	e := newEnv(t, true)
+	c := e.login(seed.CoordinatorA)
+	admin := e.login(seed.AdminA)
+
+	// A tighter schedule policy applies to newly accepted shipments.
+	admin.mustOK(200, "PUT", "/api/v1/settings/sla", map[string]any{
+		"schedule_hours": map[string]int{"low": 96, "normal": 2, "high": 4, "urgent": 1}})
+	got := admin.mustOK(200, "GET", "/api/v1/settings/sla", nil)
+	if got["schedule_hours"].(map[string]any)["normal"] != 2.0 {
+		t.Fatalf("schedule policy %v", got)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/sla", map[string]any{}, nil); r.status != 422 {
+		t.Fatalf("empty policy update: %d", r.status)
+	}
+
+	sh := c.mustOK(201, "POST", "/api/v1/shipments", createBody("Schedule SLA Account"))
+	p := "/api/v1/shipments/" + sh["id"].(string)
+	sh = c.mustOK(200, "POST", p+"/transitions", map[string]any{"version": ver(sh), "to": "quoted",
+		"quote": map[string]any{"amount_cents": 50000, "currency": "USD"}})
+	sh = c.mustOK(200, "POST", p+"/transitions", map[string]any{"version": ver(sh), "to": "accepted"})
+	if sh["schedule_sla_status"] != "on_track" || sh["accepted_at"] == nil {
+		t.Fatalf("accepted %v", sh)
+	}
+	// createBody uses priority "high" -> 4h schedule window.
+	sdue, _ := time.Parse(time.RFC3339, sh["schedule_due_at"].(string))
+	if !sdue.Equal(testdb.Now.Add(4 * time.Hour)) {
+		t.Fatalf("schedule_due_at = %v", sdue)
+	}
+
+	// Inside the 2h at-risk window, then past the deadline.
+	e.advance(3 * time.Hour)
+	sh = c.mustOK(200, "GET", p, nil)
+	if sh["schedule_sla_status"] != "at_risk" {
+		t.Fatalf("at risk %v", sh["schedule_sla_status"])
+	}
+	e.advance(2 * time.Hour)
+	sh = c.mustOK(200, "GET", p, nil)
+	if sh["schedule_sla_status"] != "breached" || sh["overdue"] != true {
+		t.Fatalf("breached %v", sh)
+	}
+
+	// Scheduling after the deadline records a miss.
+	sh = c.mustOK(200, "POST", p+"/transitions", map[string]any{"version": ver(sh), "to": "scheduled",
+		"pickup_at": testdb.Now.Add(48 * time.Hour), "carrier": "Carrier X"})
+	if sh["schedule_sla_status"] != "missed" || sh["scheduled_at"] == nil {
+		t.Fatalf("missed %v", sh)
+	}
+}

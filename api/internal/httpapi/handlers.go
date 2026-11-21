@@ -384,7 +384,12 @@ func (s *Server) handleGetSLA(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "timezone": a.Org.Timezone})
+	sp, err := s.cfg.Store.ScheduleSLAPolicy(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "timezone": a.Org.Timezone})
 }
 
 func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
@@ -394,16 +399,40 @@ func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Hours sla.Policy `json:"hours"`
+		Hours         *sla.Policy `json:"hours"`
+		ScheduleHours *sla.Policy `json:"schedule_hours"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.cfg.Store.SetSLAPolicy(r.Context(), a, in.Hours); err != nil {
-		s.writeDomainError(w, r, err)
+	if in.Hours == nil && in.ScheduleHours == nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", "hours or schedule_hours is required",
+			map[string]any{"fields": []domain.FieldError{{Field: "hours", Message: "at least one policy is required"}}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hours": in.Hours, "timezone": a.Org.Timezone})
+	if in.Hours != nil {
+		if err := s.cfg.Store.SetSLAPolicy(r.Context(), a, *in.Hours); err != nil {
+			s.writeDomainError(w, r, err)
+			return
+		}
+	}
+	if in.ScheduleHours != nil {
+		if err := s.cfg.Store.SetScheduleSLAPolicy(r.Context(), a, *in.ScheduleHours); err != nil {
+			s.writeDomainError(w, r, err)
+			return
+		}
+	}
+	p, err := s.cfg.Store.SLAPolicy(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	sp, err := s.cfg.Store.ScheduleSLAPolicy(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hours": p, "schedule_hours": sp, "timezone": a.Org.Timezone})
 }
 
 // idempotent replays the stored response when a request repeats an

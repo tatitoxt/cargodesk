@@ -28,10 +28,25 @@ func (p Priority) Valid() bool {
 	return false
 }
 
-// Policy maps each priority to the hours allowed until a quote is sent.
+// Policy maps each priority to the hours allowed for a stage.
 type Policy map[Priority]int
 
+// Stage names the SLA window a policy applies to.
+type Stage string
+
+const (
+	StageQuote    Stage = "quote"    // created -> quoted
+	StageSchedule Stage = "schedule" // accepted -> scheduled
+)
+
+var Stages = []Stage{StageQuote, StageSchedule}
+
+// DefaultPolicy is the default time-to-quote policy.
 func DefaultPolicy() Policy { return Policy{Low: 72, Normal: 24, High: 8, Urgent: 2} }
+
+// DefaultSchedulePolicy is the default time-to-schedule policy (accepted to
+// pickup scheduled) — looser than quoting but tighter than never.
+func DefaultSchedulePolicy() Policy { return Policy{Low: 96, Normal: 48, High: 24, Urgent: 8} }
 
 const maxHours = 24 * 30
 
@@ -93,16 +108,43 @@ func StatusOf(state workflow.State, dueAt time.Time, quotedAt *time.Time, now ti
 }
 
 // Overdue reports whether a shipment needs attention now: it is not terminal
-// and either its next action is due or its quote SLA is breached. The SQL
-// filter in the store package must match this definition.
-func Overdue(state workflow.State, nextActionAt *time.Time, dueAt time.Time, now time.Time) bool {
+// and either its next action is due, its quote SLA is breached or — while
+// waiting to be scheduled — its schedule SLA is breached. The SQL filter in
+// the store package must match this definition.
+func Overdue(state workflow.State, nextActionAt *time.Time, dueAt time.Time, scheduleDueAt *time.Time, now time.Time) bool {
 	if state.Terminal() {
 		return false
 	}
 	if nextActionAt != nil && !nextActionAt.After(now) {
 		return true
 	}
-	return state.AwaitingQuote() && !dueAt.After(now)
+	if state.AwaitingQuote() && !dueAt.After(now) {
+		return true
+	}
+	return state == workflow.Accepted && scheduleDueAt != nil && !scheduleDueAt.After(now)
+}
+
+// StatusOfSchedule reports the schedule-stage SLA status. scheduleDueAt is nil
+// for shipments accepted before the stage SLA existed (not applicable).
+// scheduledAt is when the shipment first reached "scheduled".
+func StatusOfSchedule(state workflow.State, scheduleDueAt, scheduledAt *time.Time, now time.Time) Status {
+	if scheduledAt != nil {
+		if scheduleDueAt != nil && scheduledAt.After(*scheduleDueAt) {
+			return Missed
+		}
+		return Met
+	}
+	if state != workflow.Accepted || scheduleDueAt == nil {
+		return NotApplied
+	}
+	switch {
+	case !now.Before(*scheduleDueAt):
+		return Breached
+	case scheduleDueAt.Sub(now) <= atRiskWindow:
+		return AtRisk
+	default:
+		return OnTrack
+	}
 }
 
 // DayBounds returns the UTC instants [start, end) of the calendar day that

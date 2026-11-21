@@ -35,9 +35,14 @@ explains how it got there.
   open quote for `accepted`, pickup time and carrier for `scheduled`, and
   delivery evidence (received by, delivered at — not in the future) for `delivered`.
 - **Ownership and next action**: owner, priority and next-action date/note per request.
-- **Internal SLA**: per-priority "time to quote" policy (defaults: urgent 2h,
-  high 8h, normal 24h, low 72h; admins can change it). Status is shown as
-  on track / at risk (last 2h) / breached / met / missed.
+- **Internal SLA**: per-priority policies for two stages — "time to quote"
+  (defaults: urgent 2h, high 8h, normal 24h, low 72h) and "time to
+  schedule" once a quote is accepted (defaults: urgent 8h, high 24h,
+  normal 48h, low 96h). Statuses are shown as
+  on track / at risk (last 2h) / breached / met / missed per stage
+  (`sla_status` and `schedule_sla_status`); a breached schedule SLA flags
+  the board's overdue filter. `PUT /api/v1/settings/sla` accepts `hours`
+  and/or `schedule_hours`.
 - **Business-hours calendar**: admins can set a weekly working window
   (ISO weekdays + start/end minute, in the org timezone) plus holiday dates.
   With a calendar, SLA deadlines count business minutes — a request opened
@@ -253,7 +258,7 @@ No external API keys are used or required.
 
 ## Roadmap
 
-1. SLA for later stages (e.g. time to schedule) and per-day business windows.
+1. SLA for the remaining stages (e.g. time in transit) and per-day business windows.
 2. Email/WhatsApp channels for the existing webhook pipeline.
 3. Attachments for delivery evidence with retention rules.
 

@@ -79,18 +79,46 @@ func TestOverdue(t *testing.T) {
 		state workflow.State
 		next  *time.Time
 		due   time.Time
+		sdue  *time.Time
 		want  bool
 	}{
-		{"next action passed", workflow.Scheduled, &past, future, true},
-		{"next action exactly now", workflow.Quoted, ptr(now), future, true},
-		{"next action in future, sla ok", workflow.New, &future, future, false},
-		{"sla breached while awaiting quote", workflow.NeedsInfo, nil, past, true},
-		{"sla breach ignored after quote", workflow.Quoted, nil, past, false},
-		{"terminal never overdue", workflow.Delivered, &past, past, false},
-		{"cancelled never overdue", workflow.Cancelled, &past, past, false},
+		{"next action passed", workflow.Scheduled, &past, future, nil, true},
+		{"next action exactly now", workflow.Quoted, ptr(now), future, nil, true},
+		{"next action in future, sla ok", workflow.New, &future, future, nil, false},
+		{"sla breached while awaiting quote", workflow.NeedsInfo, nil, past, nil, true},
+		{"sla breach ignored after quote", workflow.Quoted, nil, past, nil, false},
+		{"terminal never overdue", workflow.Delivered, &past, past, nil, false},
+		{"cancelled never overdue", workflow.Cancelled, &past, past, nil, false},
+		{"schedule sla breached while accepted", workflow.Accepted, nil, future, &past, true},
+		{"schedule sla pending while accepted", workflow.Accepted, nil, future, &future, false},
+		{"no schedule sla for legacy rows", workflow.Accepted, nil, future, nil, false},
+		{"schedule sla ignored in other states", workflow.InTransit, nil, future, &past, false},
 	}
 	for _, c := range cases {
-		if got := Overdue(c.state, c.next, c.due, now); got != c.want {
+		if got := Overdue(c.state, c.next, c.due, c.sdue, now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestStatusOfSchedule(t *testing.T) {
+	past, soon, future := now.Add(-time.Minute), now.Add(time.Hour), now.Add(48*time.Hour)
+	cases := []struct {
+		name      string
+		state     workflow.State
+		due, done *time.Time
+		want      Status
+	}{
+		{"met before due", workflow.Scheduled, &future, &past, Met},
+		{"missed after due", workflow.Scheduled, &past, &now, Missed},
+		{"breached while accepted", workflow.Accepted, &past, nil, Breached},
+		{"at risk within window", workflow.Accepted, &soon, nil, AtRisk},
+		{"on track with room", workflow.Accepted, &future, nil, OnTrack},
+		{"not applicable before accepted", workflow.Quoted, &future, nil, NotApplied},
+		{"not applicable without due", workflow.Accepted, nil, nil, NotApplied},
+	}
+	for _, c := range cases {
+		if got := StatusOfSchedule(c.state, c.due, c.done, now); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}

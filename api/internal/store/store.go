@@ -3,8 +3,8 @@
 package store
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -43,15 +43,15 @@ type Actor struct {
 }
 
 type Org struct {
-	ID       string         `json:"id"`
-	Slug     string         `json:"slug"`
-	Name     string         `json:"name"`
-	Timezone string         `json:"timezone"`
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Name     string `json:"name"`
+	Timezone string `json:"timezone"`
 	// WebhookURL receives a JSON POST per shipment event when set.
 	WebhookURL *string `json:"-"`
 	// WebhookSecret, when set, signs bodies as X-CargoDesk-Signature: sha256=<hmac>.
-	WebhookSecret *string `json:"-"`
-	Loc            *time.Location `json:"-"`
+	WebhookSecret *string        `json:"-"`
+	Loc           *time.Location `json:"-"`
 }
 
 func loadLoc(name string) *time.Location {
@@ -226,10 +226,15 @@ func (s *Store) tx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, s.pool, fn)
 }
 
-// SLAPolicy returns the organization's policy, falling back to defaults for
-// priorities without a row.
+// SLAPolicy returns the organization's time-to-quote policy, falling back to
+// defaults for priorities without a row.
 func (s *Store) SLAPolicy(ctx context.Context, a Actor) (sla.Policy, error) {
-	return slaPolicy(ctx, s.pool, a.Org.ID)
+	return slaPolicy(ctx, s.pool, a.Org.ID, sla.StageQuote)
+}
+
+// ScheduleSLAPolicy returns the organization's time-to-schedule policy.
+func (s *Store) ScheduleSLAPolicy(ctx context.Context, a Actor) (sla.Policy, error) {
+	return slaPolicy(ctx, s.pool, a.Org.ID, sla.StageSchedule)
 }
 
 type querier interface {
@@ -238,9 +243,12 @@ type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-func slaPolicy(ctx context.Context, q querier, orgID string) (sla.Policy, error) {
+func slaPolicy(ctx context.Context, q querier, orgID string, stage sla.Stage) (sla.Policy, error) {
 	p := sla.DefaultPolicy()
-	rows, err := q.Query(ctx, `SELECT priority, hours FROM sla_policies WHERE organization_id = $1`, orgID)
+	if stage == sla.StageSchedule {
+		p = sla.DefaultSchedulePolicy()
+	}
+	rows, err := q.Query(ctx, `SELECT priority, hours FROM sla_policies WHERE organization_id = $1 AND stage = $2`, orgID, string(stage))
 	if err != nil {
 		return nil, err
 	}
@@ -256,16 +264,26 @@ func slaPolicy(ctx context.Context, q querier, orgID string) (sla.Policy, error)
 	return p, rows.Err()
 }
 
-// SetSLAPolicy replaces the policy. It applies to requests created, or whose
-// priority changes, afterwards; existing due dates are not rewritten.
+// SetSLAPolicy replaces the quote-stage policy. It applies to requests
+// created, or whose priority changes, afterwards; existing due dates are not
+// rewritten.
 func (s *Store) SetSLAPolicy(ctx context.Context, a Actor, p sla.Policy) error {
+	return s.setSLAStagePolicy(ctx, a, sla.StageQuote, p, "hours")
+}
+
+// SetScheduleSLAPolicy replaces the schedule-stage policy.
+func (s *Store) SetScheduleSLAPolicy(ctx context.Context, a Actor, p sla.Policy) error {
+	return s.setSLAStagePolicy(ctx, a, sla.StageSchedule, p, "schedule_hours")
+}
+
+func (s *Store) setSLAStagePolicy(ctx context.Context, a Actor, stage sla.Stage, p sla.Policy, field string) error {
 	if err := p.Validate(); err != nil {
-		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "hours", Message: err.Error()}}}
+		return &domain.ValidationError{Fields: []domain.FieldError{{Field: field, Message: err.Error()}}}
 	}
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		for _, pr := range sla.Priorities {
-			if _, err := tx.Exec(ctx, `INSERT INTO sla_policies (organization_id, priority, hours) VALUES ($1, $2, $3)
-				ON CONFLICT (organization_id, priority) DO UPDATE SET hours = EXCLUDED.hours`, a.Org.ID, pr, p[pr]); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO sla_policies (organization_id, stage, priority, hours) VALUES ($1, $2, $3, $4)
+				ON CONFLICT (organization_id, stage, priority) DO UPDATE SET hours = EXCLUDED.hours`, a.Org.ID, string(stage), pr, p[pr]); err != nil {
 				return err
 			}
 		}
@@ -366,10 +384,10 @@ func (s *Store) ClearBusinessCalendar(ctx context.Context, a Actor) error {
 	return err
 }
 
-// dueAt computes the SLA deadline: business minutes when a calendar is set in
-// the org timezone, else plain hours from the policy.
-func dueAt(ctx context.Context, q querier, a Actor, createdAt time.Time, pr sla.Priority) (time.Time, error) {
-	policy, err := slaPolicy(ctx, q, a.Org.ID)
+// dueAtStage computes an SLA deadline for one stage: business minutes when a
+// calendar is set in the org timezone, else plain hours from the policy.
+func dueAtStage(ctx context.Context, q querier, a Actor, from time.Time, pr sla.Priority, stage sla.Stage) (time.Time, error) {
+	policy, err := slaPolicy(ctx, q, a.Org.ID, stage)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -378,11 +396,11 @@ func dueAt(ctx context.Context, q querier, a Actor, createdAt time.Time, pr sla.
 		return time.Time{}, err
 	}
 	if cal == nil {
-		return sla.DueAt(createdAt, pr, policy), nil
+		return sla.DueAt(from, pr, policy), nil
 	}
 	loc, err := time.LoadLocation(a.Org.Timezone)
 	if err != nil {
 		loc = time.UTC
 	}
-	return sla.DueAtBusiness(createdAt, policy[pr], *cal, loc), nil
+	return sla.DueAtBusiness(from, policy[pr], *cal, loc), nil
 }
