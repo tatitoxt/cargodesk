@@ -37,6 +37,9 @@ type Config struct {
 	MaxAttachmentBytes int64
 	// OIDCVerifier validates ID tokens for POST /api/v1/auth/oidc; nil disables it.
 	OIDCVerifier *OIDCVerifier
+	// EmailEnabled reports whether SMTP env config is present (SMTP_HOST); the
+	// settings UI uses it to explain pending email deliveries.
+	EmailEnabled bool
 }
 
 type Server struct {
@@ -97,6 +100,8 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/v1/settings/webhook", s.authed(s.handlePutWebhook))
 	m.HandleFunc("DELETE /api/v1/settings/webhook", s.authed(s.handleDeleteWebhook))
 	m.HandleFunc("POST /api/v1/settings/webhook/test", s.authed(s.handleTestWebhook))
+	m.HandleFunc("GET /api/v1/settings/email", s.authed(s.handleGetEmail))
+	m.HandleFunc("PUT /api/v1/settings/email", s.authed(s.handlePutEmail))
 }
 
 // ServeHTTP wraps the mux with recovery, correlation IDs, body limits,

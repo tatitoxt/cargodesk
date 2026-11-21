@@ -130,11 +130,33 @@ func (s *Store) Webhook(ctx context.Context, a Actor) (url string, events []stri
 	return url, events, sec != nil, err
 }
 
-// Delivery is a queued outbound webhook POST.
+// SetEmailRecipients replaces the org's notification email list; an empty
+// list disables the email channel.
+func (s *Store) SetEmailRecipients(ctx context.Context, a Actor, emails []string) error {
+	var v *([]string)
+	if len(emails) > 0 {
+		v = &emails
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET notification_emails = $2 WHERE id = $1`,
+		a.Org.ID, v)
+	return err
+}
+
+// EmailRecipients returns the org's notification email list (nil = off).
+func (s *Store) EmailRecipients(ctx context.Context, a Actor) ([]string, error) {
+	var emails []string
+	err := s.pool.QueryRow(ctx, `SELECT notification_emails FROM organizations WHERE id = $1`,
+		a.Org.ID).Scan(&emails)
+	return emails, err
+}
+
+// Delivery is a queued outbound notification (webhook POST or email).
 type Delivery struct {
 	ID        int64
 	EventID   int64
+	Channel   string
 	URL       string
+	Rcpt      []string
 	Payload   json.RawMessage
 	Attempts  int
 	CreatedAt time.Time
@@ -142,7 +164,7 @@ type Delivery struct {
 
 // DueDeliveries claims up to n pending deliveries whose attempt is due.
 func (s *Store) DueDeliveries(ctx context.Context, n int) ([]Delivery, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, event_id, url, payload, attempts, created_at
+	rows, err := s.pool.Query(ctx, `SELECT id, event_id, channel, coalesce(url, ''), rcpt, payload, attempts, created_at
 		FROM notification_deliveries
 		WHERE delivered_at IS NULL AND next_attempt_at <= now() AND attempts < 8
 		ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, n)
@@ -153,7 +175,7 @@ func (s *Store) DueDeliveries(ctx context.Context, n int) ([]Delivery, error) {
 	var out []Delivery
 	for rows.Next() {
 		var d Delivery
-		if err := rows.Scan(&d.ID, &d.EventID, &d.URL, &d.Payload, &d.Attempts, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.EventID, &d.Channel, &d.URL, &d.Rcpt, &d.Payload, &d.Attempts, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -183,6 +205,7 @@ func (s *Store) RetryDelivery(ctx context.Context, id int64, attempts int, errMs
 // RecentDeliveries lists the org's last n deliveries for the settings UI.
 type DeliveryLog struct {
 	ID          int64      `json:"id"`
+	Channel     string     `json:"channel"`
 	Action      string     `json:"action"`
 	StatusCode  *int       `json:"status_code"`
 	Attempts    int        `json:"attempts"`
@@ -193,7 +216,7 @@ type DeliveryLog struct {
 }
 
 func (s *Store) RecentDeliveries(ctx context.Context, a Actor, n int) ([]DeliveryLog, error) {
-	rows, err := s.pool.Query(ctx, `SELECT d.id, d.action, d.status_code, d.attempts,
+	rows, err := s.pool.Query(ctx, `SELECT d.id, d.channel, d.action, d.status_code, d.attempts,
 			d.delivered_at IS NOT NULL, d.last_error, d.created_at, d.delivered_at
 		FROM notification_deliveries d
 		WHERE d.organization_id = $1 ORDER BY d.id DESC LIMIT $2`, a.Org.ID, n)
@@ -204,7 +227,7 @@ func (s *Store) RecentDeliveries(ctx context.Context, a Actor, n int) ([]Deliver
 	out := []DeliveryLog{}
 	for rows.Next() {
 		var l DeliveryLog
-		if err := rows.Scan(&l.ID, &l.Action, &l.StatusCode, &l.Attempts, &l.Delivered, &l.LastError, &l.CreatedAt, &l.DeliveredAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.Channel, &l.Action, &l.StatusCode, &l.Attempts, &l.Delivered, &l.LastError, &l.CreatedAt, &l.DeliveredAt); err != nil {
 			return nil, err
 		}
 		out = append(out, l)

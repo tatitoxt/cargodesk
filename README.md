@@ -58,6 +58,13 @@ explains how it got there.
   the event (outbox pattern) and retried with backoff by a background
   dispatcher; `POST /api/v1/settings/webhook/test` sends a ping and
   `GET` shows the last deliveries.
+  - **Email channel**: admins set a per-org recipient list via
+    `PUT /api/v1/settings/email` (validated addresses, admin-only write).
+    The same outbox carries `channel='email'` deliveries — subject and plain-text
+    body are rendered from the event payload and sent through SMTP
+    (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM`/`SMTP_TLS`
+    deployment env, plain or implicit TLS). `GET` reports `smtp_enabled`
+    and the email delivery log.
 - **Auditable timeline**: every change writes an append-only event (actor,
   action, from/to state, reason, change data, timestamp, correlation ID) in the same
   transaction as the change. PostgreSQL triggers reject `UPDATE`/`DELETE`/`TRUNCATE` on events.
@@ -100,7 +107,7 @@ explains how it got there.
 - **Synthetic seed** built through the same store code paths, so seeded
   timelines are real events.
 
-Not in the MVP (by design): WhatsApp/email, maps/GPS, billing, customer portal,
+Not in the MVP (by design): WhatsApp, maps/GPS, billing, customer portal,
 document storage, AI.
 
 ## Quickstart (Docker Compose demo)
@@ -267,7 +274,7 @@ No external API keys are used or required.
 
 ## Roadmap
 
-1. Email/WhatsApp channels for the existing webhook pipeline.
+1. WhatsApp channel for the existing notification pipeline.
 
 ## License
 

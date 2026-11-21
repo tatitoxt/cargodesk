@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -631,6 +632,63 @@ func (s *Server) PurgeExpiredAttachments(ctx context.Context) (int, error) {
 		}
 	}
 	return len(purged), nil
+}
+
+var emailRE = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+
+func (s *Server) handleGetEmail(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	emails, err := s.cfg.Store.EmailRecipients(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	deliveries, err := s.cfg.Store.RecentDeliveries(r.Context(), a, 10)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	out := []map[string]any{}
+	for _, d := range deliveries {
+		if d.Channel == "email" {
+			out = append(out, map[string]any{
+				"id": d.ID, "action": d.Action, "delivered": d.Delivered,
+				"attempts": d.Attempts, "last_error": d.LastError,
+				"created_at": d.CreatedAt, "delivered_at": d.DeliveredAt,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recipients":   emails,
+		"smtp_enabled": s.cfg.EmailEnabled,
+		"deliveries":   out,
+	})
+}
+
+func (s *Server) handlePutEmail(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change email notifications", nil)
+		return
+	}
+	var in struct {
+		Recipients []string `json:"recipients"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	for _, em := range in.Recipients {
+		if !emailRE.MatchString(em) {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+				"recipients must be valid email addresses", map[string]any{"recipients": em})
+			return
+		}
+	}
+	if err := s.cfg.Store.SetEmailRecipients(r.Context(), a, in.Recipients); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"recipients": in.Recipients})
 }
 
 func (s *Server) handleGetWebhook(w http.ResponseWriter, r *http.Request) {

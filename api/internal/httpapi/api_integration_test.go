@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -11,12 +12,14 @@ import (
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1262,8 +1265,166 @@ func TestTransitSLA(t *testing.T) {
 
 	// Delivering after the deadline records a miss.
 	sh = c.mustOK(200, "POST", p+"/transitions", map[string]any{"version": ver(sh), "to": "delivered",
-		"evidence": map[string]any{"delivered_at": testdb.Now.Add(5*time.Hour), "received_by": "Receiver", "note": "ok"}})
+		"evidence": map[string]any{"delivered_at": testdb.Now.Add(5 * time.Hour), "received_by": "Receiver", "note": "ok"}})
 	if sh["transit_sla_status"] != "missed" || sh["delivered_at"] == nil {
 		t.Fatalf("missed %v", sh)
 	}
+}
+
+// Minimal SMTP sink: accepts EHLO/MAIL/RCPT/DATA and records the DATA body.
+type smtpSink struct {
+	ln   net.Listener
+	mu   sync.Mutex
+	got  []string
+	rcpt []string
+}
+
+func newSMTPSink(t *testing.T) *smtpSink {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &smtpSink{ln: ln}
+	t.Cleanup(func() { ln.Close() })
+	go s.serve()
+	return s
+}
+
+func (s *smtpSink) serve() {
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			r := bufio.NewReader(conn)
+			fmt.Fprintf(conn, "220 sink\r\n")
+			var data bool
+			var lines []string
+			for {
+				line, err := r.ReadString('\n')
+				if err != nil {
+					return
+				}
+				line = strings.TrimRight(line, "\r\n")
+				if data {
+					if line == "." {
+						s.mu.Lock()
+						s.got = append(s.got, strings.Join(lines, "\n"))
+						s.mu.Unlock()
+						data = false
+						lines = nil
+						fmt.Fprintf(conn, "250 ok\r\n")
+						continue
+					}
+					lines = append(lines, line)
+					continue
+				}
+				verb := strings.ToUpper(strings.Fields(line + " ")[0])
+				switch {
+				case strings.HasPrefix(verb, "EHLO") || strings.HasPrefix(verb, "HELO"):
+					fmt.Fprintf(conn, "250-sink\r\n250 OK\r\n")
+				case strings.HasPrefix(strings.ToUpper(line), "MAIL FROM"):
+					fmt.Fprintf(conn, "250 ok\r\n")
+				case strings.HasPrefix(strings.ToUpper(line), "RCPT TO"):
+					s.mu.Lock()
+					s.rcpt = append(s.rcpt, line)
+					s.mu.Unlock()
+					fmt.Fprintf(conn, "250 ok\r\n")
+				case verb == "DATA":
+					data = true
+					fmt.Fprintf(conn, "354 go\r\n")
+				case verb == "QUIT":
+					fmt.Fprintf(conn, "221 bye\r\n")
+					return
+				case verb == "RSET" || verb == "NOOP":
+					fmt.Fprintf(conn, "250 ok\r\n")
+				default:
+					fmt.Fprintf(conn, "250 ok\r\n")
+				}
+			}
+		}()
+	}
+}
+
+func TestEmailChannel(t *testing.T) {
+	e := newEnv(t, true)
+	c := e.login(seed.CoordinatorA)
+	admin := e.login(seed.AdminA)
+	viewer := e.login(seed.ViewerA)
+
+	// Validation + RBAC.
+	if r := viewer.do("PUT", "/api/v1/settings/email", map[string]any{"recipients": []string{"a@b.co"}}, nil); r.status != 403 {
+		t.Fatalf("viewer put: %d, want 403", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/email", map[string]any{"recipients": []string{"nope"}}, nil); r.status != 422 {
+		t.Fatalf("bad email: %d, want 422", r.status)
+	}
+	admin.mustOK(200, "PUT", "/api/v1/settings/email", map[string]any{
+		"recipients": []string{"ops@demo.test", "oncall@demo.test"}})
+	got := admin.mustOK(200, "GET", "/api/v1/settings/email", nil)
+	rcpts := got["recipients"].([]any)
+	if len(rcpts) != 2 {
+		t.Fatalf("recipients %v", got)
+	}
+
+	// A shipment event enqueues an email-channel delivery row.
+	c.mustOK(201, "POST", "/api/v1/shipments", createBody("Email Account"))
+	var channel string
+	var rcpt []string
+	if err := e.pool.QueryRow(t.Context(),
+		`SELECT channel, rcpt FROM notification_deliveries ORDER BY id DESC LIMIT 1`).Scan(&channel, &rcpt); err != nil {
+		t.Fatal(err)
+	}
+	if channel != "email" || len(rcpt) != 2 {
+		t.Fatalf("delivery channel=%s rcpt=%v", channel, rcpt)
+	}
+
+	// Real SMTPMailer delivers it to the sink and marks the row delivered.
+	sink := newSMTPSink(t)
+	_, port, _ := net.SplitHostPort(sink.ln.Addr().String())
+	p, _ := strconv.Atoi(port)
+	st := store.New(e.pool)
+	d := &notify.Dispatcher{Store: st, Interval: 20 * time.Millisecond,
+		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Mailer: &notify.SMTPMailer{Host: "127.0.0.1", Port: p, From: "noreply@cargodesk.test"}}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go d.Run(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sink.mu.Lock()
+		n := len(sink.got)
+		sink.mu.Unlock()
+		if n >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.got) != 1 {
+		t.Fatalf("emails received: %d", len(sink.got))
+	}
+	body := sink.got[0]
+	if !strings.Contains(body, "Subject: CargoDesk: created shipment") ||
+		!strings.Contains(body, "organization: demo-freight") {
+		t.Fatalf("email body:\n%s", body)
+	}
+	if len(sink.rcpt) != 2 {
+		t.Fatalf("rcpt commands: %v", sink.rcpt)
+	}
+
+	// The settings endpoint reports the delivered email.
+	got = admin.mustOK(200, "GET", "/api/v1/settings/email", nil)
+	dels := got["deliveries"].([]any)
+	if len(dels) == 0 || dels[0].(map[string]any)["delivered"] != true {
+		t.Fatalf("email deliveries log: %s", got["deliveries"])
+	}
+
+	// Empty list disables the channel.
+	admin.mustOK(200, "PUT", "/api/v1/settings/email", map[string]any{"recipients": []string{}})
 }

@@ -95,8 +95,19 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		if iss, cid := os.Getenv("OIDC_ISSUER"), os.Getenv("OIDC_CLIENT_ID"); iss != "" && cid != "" {
 			oidc = httpapi.NewOIDCVerifier(iss, cid)
 		}
+		var mailer notify.Mailer
+		if host := os.Getenv("SMTP_HOST"); host != "" {
+			port, _ := strconv.Atoi(env("SMTP_PORT", "25"))
+			mailer = &notify.SMTPMailer{
+				Host: host, Port: port,
+				User: os.Getenv("SMTP_USER"), Pass: os.Getenv("SMTP_PASS"),
+				From: env("SMTP_FROM", "cargodesk@localhost"),
+				TLS:  env("SMTP_TLS", "false") == "true",
+			}
+		}
 		api := httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
-			AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc})
+			AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc,
+			EmailEnabled: mailer != nil})
 		srv := &http.Server{
 			Addr:              env("ADDR", ":8080"),
 			Handler:           api,
@@ -106,7 +117,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		}
 		errc := make(chan error, 1)
 		go func() { errc <- srv.ListenAndServe() }()
-		go (&notify.Dispatcher{Store: st, Log: log}).Run(ctx)
+		go (&notify.Dispatcher{Store: st, Log: log, Mailer: mailer}).Run(ctx)
 		go retentionLoop(ctx, api, log)
 		log.Info("listening", "addr", srv.Addr, "demo_auth", demo)
 		select {

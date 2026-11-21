@@ -150,10 +150,10 @@ func (s *Store) SetAttachmentRetention(ctx context.Context, a Actor, days int) e
 // PurgedAttachment is one attachment row deleted by a retention run. The
 // caller removes StorageKey's blob once the database deletion committed.
 type PurgedAttachment struct {
-	OrgID       string
-	ShipmentID  string
-	StorageKey  string
-	Filename    string
+	OrgID        string
+	ShipmentID   string
+	StorageKey   string
+	Filename     string
 	AttachmentID string
 }
 

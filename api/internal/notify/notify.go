@@ -26,6 +26,9 @@ type Dispatcher struct {
 	Client   *http.Client
 	Interval time.Duration
 	Batch    int
+	// Mailer, when set, delivers channel='email' rows; without it they retry
+	// until their attempts run out.
+	Mailer Mailer
 	// Signing is shared by the dispatcher and the "send test" endpoint.
 	Sign func(payload []byte, secret string) string
 }
@@ -67,14 +70,32 @@ func (d *Dispatcher) flush(ctx context.Context) {
 		return
 	}
 	for _, del := range ds {
-		if err := d.post(ctx, del); err != nil {
-			d.Log.Warn("webhook delivery failed", "id", del.ID, "attempts", del.Attempts+1, "error", err)
+		var err error
+		if del.Channel == "email" {
+			err = d.mail(ctx, del)
+		} else {
+			err = d.post(ctx, del)
+		}
+		if err != nil {
+			d.Log.Warn("delivery failed", "id", del.ID, "channel", del.Channel, "attempts", del.Attempts+1, "error", err)
 			if err := d.Store.RetryDelivery(ctx, del.ID, del.Attempts+1, err.Error()); err != nil {
 				d.Log.Warn("retry record failed", "id", del.ID, "error", err)
 			}
 			continue
 		}
 	}
+}
+
+// mail sends an email delivery through the configured Mailer and marks it
+// delivered (status_code 0 distinguishes it from HTTP responses in the log).
+func (d *Dispatcher) mail(ctx context.Context, del store.Delivery) error {
+	if d.Mailer == nil {
+		return fmt.Errorf("email channel not configured (SMTP_HOST unset)")
+	}
+	if err := d.Mailer.Send(ctx, del.Rcpt, EmailSubject(del.Payload), EmailBody(del.Payload)); err != nil {
+		return err
+	}
+	return d.Store.MarkDelivered(ctx, del.ID, 0)
 }
 
 func (d *Dispatcher) post(ctx context.Context, del store.Delivery) error {
