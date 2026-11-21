@@ -73,11 +73,12 @@ explains how it got there.
   `MAX_ATTACHMENT_BYTES` (default 10 MiB) and each file's SHA-256 is stored with
   the row. Uploads and deletes write audit events.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
-- **Member management**: admins create, edit and remove organization members via
-  `POST /api/v1/users`, `PATCH /api/v1/users/{id}` and `DELETE /api/v1/users/{id}`;
-  emails are unique case-insensitively (409 `email_taken`), demoting or removing
-  the last admin is rejected (409 `last_admin`), and deleting a member kills
-  their sessions immediately.
+- **Member management**: admins invite, re-role and remove organization members
+  from the `/members` page (backed by `POST /api/v1/users`,
+  `PATCH /api/v1/users/{id}` and `DELETE /api/v1/users/{id}`); emails are unique
+  case-insensitively (409 `email_taken`), demoting or removing the last admin is
+  rejected (409 `last_admin`), and deleting a member kills their sessions
+  immediately. Non-admins see a read-only roster.
 - **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
 - **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
 - **Optimistic concurrency**: mutations carry a `version`; stale writes get `409`
@@ -194,13 +195,16 @@ E2E specs (`web/e2e/`):
 - CSV export with formula escaping.
 - Saved views: save the current filters under a name, re-apply from the board,
   and delete.
+- Members: admin invites a member, changes their role and removes them; a
+  duplicate email surfaces the API error; a coordinator sees the roster with no
+  member controls.
 
 ### Measured results (this repository, reproducible with the commands above)
 
 - Go: 57 top-level tests and 92 subtests pass across 7 packages
   (`go test -v ./... | grep -cE '^\s*--- PASS'` → 149), including real-PostgreSQL
   integration tests in `internal/store` and `internal/httpapi`.
-- Playwright: 8 E2E tests pass in Chromium.
+- Playwright: 11 E2E tests pass in Chromium.
 
 ### CI
 
@@ -244,15 +248,14 @@ No external API keys are used or required.
   weekly window (no per-day windows, no half-days).
 - Delivery "evidence" is a text record (received by, time, note); no file uploads.
 - Notifications are outbound webhooks only (signed with HMAC); no email/WhatsApp, no maps/GPS, no customer portal.
-- Organizations are created by the seed only; member management is API-only for now (no admin UI).
+- Organizations are created by the seed only; members sign in with the demo or OIDC login, not by password invite yet.
 - No load testing or security audit has been performed.
 
 ## Roadmap
 
-2. Member-management UI in the web app (the API is in place).
-3. SLA for later stages (e.g. time to schedule) and per-day business windows.
-4. Email/WhatsApp channels for the existing webhook pipeline.
-5. Attachments for delivery evidence with retention rules.
+1. SLA for later stages (e.g. time to schedule) and per-day business windows.
+2. Email/WhatsApp channels for the existing webhook pipeline.
+3. Attachments for delivery evidence with retention rules.
 
 ## License
 

@@ -17,6 +17,7 @@ export function Nav() {
       <strong>CargoDesk</strong>
       <Link href="/">Requests</Link>
       {me.role !== "viewer" && <Link href="/shipments/new">New request</Link>}
+      {me.role === "admin" && <Link href="/members">Members</Link>}
       <Link href="/settings">SLA policy</Link>
       <span className="spacer" />
       <span data-testid="current-user">
