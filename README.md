@@ -237,3 +237,7 @@ No external API keys are used or required.
 ## License
 
 [MIT](LICENSE) © Fausto Pastura
+
+## Benchmarks
+
+`go test -bench . ./api/internal/httpapi/` drives the real HTTP API against Postgres: full shipment lifecycle (create → deliver) at **11.2 ms/shipment** (~89/sec) and filtered board lists at 1.8 ms. See [docs/benchmarks.md](docs/benchmarks.md).

@@ -22,7 +22,7 @@ var Now = time.Date(2026, 3, 10, 15, 0, 0, 0, time.UTC)
 
 // Fresh returns a pool on an empty, migrated and seeded database. Without the
 // env var the test is skipped, unless CI is set, in which case it fails.
-func Fresh(t *testing.T) *pgxpool.Pool {
+func Fresh(t testing.TB) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv(EnvURL)
 	if url == "" {
