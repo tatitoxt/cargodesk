@@ -267,14 +267,16 @@ No external API keys are used or required.
 - One currency per quote and no pricing logic; quotes are entered manually.
 - Delivery "evidence" is a text record (received by, time, note); photo/POD
   evidence is a generic attachment rather than a dedicated field.
-- Notifications cover outbound webhooks (HMAC-signed) and email (SMTP); no
-  WhatsApp, maps/GPS, or customer portal.
+- Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks
+  and email (SMTP); no WhatsApp, maps/GPS, or customer portal.
 - Organizations are created by the seed only; members sign in with the demo or OIDC login, not by password invite yet.
 - No load testing or security audit has been performed.
 
 ## Roadmap
 
-1. WhatsApp channel for the existing notification pipeline.
+1. WhatsApp channel for the existing notification pipeline (Slack already
+   ships: `PUT /api/v1/settings/slack` with an incoming-webhook URL posts
+   `{"text": ...}` messages through the same signed, retried outbox).
 
 ## License
 

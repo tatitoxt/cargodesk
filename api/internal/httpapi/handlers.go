@@ -787,6 +787,59 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"queued": true})
 }
 
+func (s *Server) handleGetSlack(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	url, err := s.cfg.Store.Slack(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": url})
+}
+
+func (s *Server) handlePutSlack(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the Slack webhook", nil)
+		return
+	}
+	var in struct {
+		URL string `json:"url"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	u, err := url.Parse(in.URL)
+	if in.URL == "" || err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"url must be a full http(s) URL", map[string]any{"url": "invalid"})
+		return
+	}
+	if !strings.HasPrefix(in.URL, "https://") {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"Slack webhook URL must use https", map[string]any{"url": "https_required"})
+		return
+	}
+	if err := s.cfg.Store.SetSlack(r.Context(), a, in.URL); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": in.URL})
+}
+
+func (s *Server) handleDeleteSlack(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the Slack webhook", nil)
+		return
+	}
+	if err := s.cfg.Store.SetSlack(r.Context(), a, ""); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- member management (admins) ---
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {

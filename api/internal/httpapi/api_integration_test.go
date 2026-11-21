@@ -1428,3 +1428,88 @@ func TestEmailChannel(t *testing.T) {
 	// Empty list disables the channel.
 	admin.mustOK(200, "PUT", "/api/v1/settings/email", map[string]any{"recipients": []string{}})
 }
+
+func TestSlackNotifications(t *testing.T) {
+	// Receiver that records Slack-shaped bodies.
+	var mu sync.Mutex
+	var got []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, string(b))
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(receiver.Close)
+
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	coord := e.login(seed.CoordinatorA)
+	viewer := e.login(seed.ViewerA)
+
+	// RBAC: non-admins cannot configure the Slack webhook.
+	if r := viewer.do("PUT", "/api/v1/settings/slack", map[string]any{"url": "https://hooks.slack.com/x"}, nil); r.status != 403 {
+		t.Fatalf("viewer PUT slack: %d", r.status)
+	}
+	if r := coord.do("PUT", "/api/v1/settings/slack", map[string]any{"url": "https://hooks.slack.com/x"}, nil); r.status != 403 {
+		t.Fatalf("coordinator PUT slack: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/slack", map[string]any{"url": "http://example.com/hook"}, nil); r.status != 422 {
+		t.Fatalf("http slack URL: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/slack", map[string]any{"url": "https://hooks.slack.com/services/T/B/x"}, nil); r.status != 200 {
+		t.Fatalf("PUT slack: %d %s", r.status, r.raw)
+	}
+	if r := admin.do("GET", "/api/v1/settings/slack", nil, nil); r.status != 200 || r.body["url"] != "https://hooks.slack.com/services/T/B/x" {
+		t.Fatalf("GET slack: %d %s", r.status, r.raw)
+	}
+
+	// Repoint at the local sink (the API requires https; tests set it via the store).
+	st := store.New(e.pool)
+	actor, err := st.ActorByUserID(t.Context(), seed.AdminA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSlack(t.Context(), actor, receiver.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	// The shipment event's Slack delivery shares the webhook_events filter:
+	// none configured -> every action posts.
+	coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Slack Account"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	d := &notify.Dispatcher{Store: st, Interval: 20 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	go d.Run(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 1 {
+		t.Fatal("no slack delivery received")
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal([]byte(got[0]), &m); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := m["text"].(string)
+	if text == "" || !strings.Contains(text, "demo-freight") || !strings.Contains(text, "created") {
+		t.Fatalf("slack payload: %s", got[0])
+	}
+
+	// DELETE disables the channel.
+	if r := admin.do("DELETE", "/api/v1/settings/slack", nil, nil); r.status != 204 {
+		t.Fatalf("DELETE slack: %d", r.status)
+	}
+}

@@ -130,6 +130,28 @@ func (s *Store) Webhook(ctx context.Context, a Actor) (url string, events []stri
 	return url, events, sec != nil, err
 }
 
+// SetSlack updates the org's Slack incoming-webhook URL. Empty disables it.
+func (s *Store) SetSlack(ctx context.Context, a Actor, url string) error {
+	var u *string
+	if url != "" {
+		u = &url
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET slack_webhook_url = $2 WHERE id = $1`,
+		a.Org.ID, u)
+	return err
+}
+
+// Slack returns the org's Slack incoming-webhook URL ("" = disabled).
+func (s *Store) Slack(ctx context.Context, a Actor) (string, error) {
+	var u *string
+	err := s.pool.QueryRow(ctx, `SELECT slack_webhook_url FROM organizations WHERE id = $1`,
+		a.Org.ID).Scan(&u)
+	if u == nil {
+		return "", err
+	}
+	return *u, err
+}
+
 // SetEmailRecipients replaces the org's notification email list; an empty
 // list disables the email channel.
 func (s *Store) SetEmailRecipients(ctx context.Context, a Actor, emails []string) error {

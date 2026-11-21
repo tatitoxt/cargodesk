@@ -185,7 +185,8 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 	var url *string
 	var events []string
 	var emails []string
-	if err := q.QueryRow(ctx, `SELECT webhook_url, webhook_events, notification_emails FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url, &events, &emails); err != nil {
+	var slackURL *string
+	if err := q.QueryRow(ctx, `SELECT webhook_url, webhook_events, notification_emails, slack_webhook_url FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url, &events, &emails, &slackURL); err != nil {
 		return 0, err
 	}
 	subscribed := len(events) == 0
@@ -214,6 +215,20 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
 			(organization_id, event_id, action, channel, rcpt, payload) VALUES ($1, $2, $3, 'email', $4, $5)`,
 			a.Org.ID, id, e.Action, emails, payload); err != nil {
+			return 0, err
+		}
+	}
+	if slackURL != nil && *slackURL != "" && subscribed {
+		// Slack incoming webhooks expect {"text": ...}; the payload is frozen
+		// here so the delivery log shows exactly what was posted.
+		text := slackText(a, e)
+		payload, err := json.Marshal(map[string]any{"text": text})
+		if err != nil {
+			return 0, err
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
+			(organization_id, event_id, action, channel, url, payload) VALUES ($1, $2, $3, 'slack', $4, $5)`,
+			a.Org.ID, id, e.Action, *slackURL, payload); err != nil {
 			return 0, err
 		}
 	}
@@ -800,4 +815,18 @@ func (s *Store) ResolveException(ctx context.Context, a Actor, id string, in dom
 		return err
 	})
 	return ev, err
+}
+
+// slackText renders the one-line Slack message for a shipment event.
+func slackText(a Actor, e EventRecord) string {
+	var b strings.Builder
+	b.WriteString("*" + a.Org.Slug + "* shipment " + e.ShipmentID + " — " + e.Action)
+	if e.FromState != nil && e.ToState != nil {
+		b.WriteString(": " + *e.FromState + " → " + *e.ToState)
+	}
+	b.WriteString(" (by " + a.Email + ")")
+	if e.Reason != nil && *e.Reason != "" {
+		b.WriteString(" — reason: " + *e.Reason)
+	}
+	return b.String()
 }

@@ -100,6 +100,9 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/v1/settings/webhook", s.authed(s.handlePutWebhook))
 	m.HandleFunc("DELETE /api/v1/settings/webhook", s.authed(s.handleDeleteWebhook))
 	m.HandleFunc("POST /api/v1/settings/webhook/test", s.authed(s.handleTestWebhook))
+	m.HandleFunc("GET /api/v1/settings/slack", s.authed(s.handleGetSlack))
+	m.HandleFunc("PUT /api/v1/settings/slack", s.authed(s.handlePutSlack))
+	m.HandleFunc("DELETE /api/v1/settings/slack", s.authed(s.handleDeleteSlack))
 	m.HandleFunc("GET /api/v1/settings/email", s.authed(s.handleGetEmail))
 	m.HandleFunc("PUT /api/v1/settings/email", s.authed(s.handlePutEmail))
 }
