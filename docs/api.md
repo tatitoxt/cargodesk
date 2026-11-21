@@ -29,6 +29,9 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | DELETE | `/api/v1/views/{id}` | any | Deletes the view. Other tenants' IDs → `404`. |
 | GET | `/api/v1/settings/sla` | any | Quote SLA hours per priority. |
 | PUT | `/api/v1/settings/sla` | admin | Update SLA hours (1–720). |
+| GET | `/api/v1/settings/business-hours` | any | Org business-hours calendar (`null` when unset) + timezone. |
+| PUT | `/api/v1/settings/business-hours` | admin | `{"calendar": {"days": [1..7], "start_minute": 540, "end_minute": 1020, "holidays": ["YYYY-MM-DD"]}}`. Invalid → `422`. |
+| DELETE | `/api/v1/settings/business-hours` | admin | Remove the calendar; SLAs revert to wall-clock hours. |
 
 Mutations require `Content-Type: application/json` (`415` otherwise) and
 bodies over 64 KiB are rejected with `413`. Reusing an `Idempotency-Key`

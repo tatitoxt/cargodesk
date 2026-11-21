@@ -168,3 +168,82 @@ func userInOrg(ctx context.Context, q querier, orgID, userID string) (bool, erro
 func unknownOwner(field string) error {
 	return &domain.ValidationError{Fields: []domain.FieldError{{Field: field, Message: "is not a user of this organization"}}}
 }
+
+// BusinessCalendar returns the org's business-hours calendar, or nil when none
+// is configured (SLAs then count wall-clock hours).
+func (s *Store) BusinessCalendar(ctx context.Context, a Actor) (*sla.Calendar, error) {
+	return businessCalendar(ctx, s.pool, a.Org.ID)
+}
+
+func businessCalendar(ctx context.Context, q querier, orgID string) (*sla.Calendar, error) {
+	var c sla.Calendar
+	var days []int16
+	var holidays []time.Time
+	err := q.QueryRow(ctx, `SELECT days, start_minute, end_minute, holidays FROM business_calendars
+		WHERE organization_id = $1`, orgID).
+		Scan(&days, &c.StartMinute, &c.EndMinute, &holidays)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range days {
+		c.Days = append(c.Days, int(d))
+	}
+	for _, h := range holidays {
+		c.Holidays = append(c.Holidays, h.Format("2006-01-02"))
+	}
+	return &c, nil
+}
+
+// SetBusinessCalendar replaces the org's calendar (validated); later due dates
+// count business minutes in the organization's timezone.
+func (s *Store) SetBusinessCalendar(ctx context.Context, a Actor, c sla.Calendar) error {
+	if err := c.Validate(); err != nil {
+		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "calendar", Message: err.Error()}}}
+	}
+	if c.Holidays == nil {
+		c.Holidays = []string{}
+	}
+	days := make([]int16, len(c.Days))
+	for i, d := range c.Days {
+		days[i] = int16(d)
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO business_calendars
+		(organization_id, days, start_minute, end_minute, holidays, updated_by, updated_at)
+		VALUES ($1, $2, $3, $4, $5::date[], $6, now())
+		ON CONFLICT (organization_id) DO UPDATE SET days = EXCLUDED.days,
+		start_minute = EXCLUDED.start_minute, end_minute = EXCLUDED.end_minute,
+		holidays = EXCLUDED.holidays, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+		a.Org.ID, days, c.StartMinute, c.EndMinute, c.Holidays, a.UserID)
+	return err
+}
+
+// ClearBusinessCalendar removes the calendar; SLAs revert to wall-clock hours.
+func (s *Store) ClearBusinessCalendar(ctx context.Context, a Actor) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM business_calendars WHERE organization_id = $1`, a.Org.ID)
+	return err
+}
+
+// dueAt computes the SLA deadline: business minutes when a calendar is set in
+// the org timezone, else plain hours from the policy.
+func dueAt(ctx context.Context, q querier, a Actor, createdAt time.Time, pr sla.Priority) (time.Time, error) {
+	policy, err := slaPolicy(ctx, q, a.Org.ID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	cal, err := businessCalendar(ctx, q, a.Org.ID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if cal == nil {
+		return sla.DueAt(createdAt, pr, policy), nil
+	}
+	loc, err := time.LoadLocation(a.Org.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	return sla.DueAtBusiness(createdAt, policy[pr], *cal, loc), nil
+}

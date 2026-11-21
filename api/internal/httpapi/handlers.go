@@ -470,3 +470,45 @@ func (r *recorder) Write(b []byte) (int, error) {
 	r.buf.Write(b)
 	return r.ResponseWriter.Write(b)
 }
+
+func (s *Server) handleGetBusinessHours(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	cal, err := s.cfg.Store.BusinessCalendar(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"calendar": cal, "timezone": a.Org.Timezone})
+}
+
+func (s *Server) handlePutBusinessHours(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change business hours", nil)
+		return
+	}
+	var in struct {
+		Calendar sla.Calendar `json:"calendar"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.cfg.Store.SetBusinessCalendar(r.Context(), a, in.Calendar); err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"calendar": in.Calendar, "timezone": a.Org.Timezone})
+}
+
+func (s *Server) handleDeleteBusinessHours(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change business hours", nil)
+		return
+	}
+	if err := s.cfg.Store.ClearBusinessCalendar(r.Context(), a); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

@@ -137,3 +137,69 @@ func TestPriorityValid(t *testing.T) {
 		t.Error("critical is not a priority")
 	}
 }
+
+func TestCalendarValidate(t *testing.T) {
+	ok := Calendar{Days: []int{1, 2, 3, 4, 5}, StartMinute: 540, EndMinute: 1020}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []Calendar{
+		{Days: nil, StartMinute: 0, EndMinute: 60},
+		{Days: []int{0}, StartMinute: 0, EndMinute: 60},
+		{Days: []int{8}, StartMinute: 0, EndMinute: 60},
+		{Days: []int{1, 1}, StartMinute: 0, EndMinute: 60},
+		{Days: []int{1}, StartMinute: 60, EndMinute: 60},
+		{Days: []int{1}, StartMinute: 0, EndMinute: 1441},
+		{Days: []int{1}, StartMinute: 0, EndMinute: 60, Holidays: []string{"2026/03/10"}},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("%+v should not validate", bad)
+		}
+	}
+}
+
+// Mon-Fri 09:00-17:00 in UTC.
+var weekdays9to5 = Calendar{Days: []int{1, 2, 3, 4, 5}, StartMinute: 540, EndMinute: 1020}
+
+func TestDueAtBusinessInsideWindow(t *testing.T) {
+	// Monday 2026-03-09 10:00 UTC + 2h => same day 12:00.
+	created := time.Date(2026, 3, 9, 10, 0, 0, 0, time.UTC)
+	got := DueAtBusiness(created, 2, weekdays9to5, time.UTC)
+	if want := time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestDueAtBusinessBeforeWindowStartsToday(t *testing.T) {
+	created := time.Date(2026, 3, 9, 7, 0, 0, 0, time.UTC) // before 09:00
+	got := DueAtBusiness(created, 1, weekdays9to5, time.UTC)
+	if want := time.Date(2026, 3, 9, 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestDueAtBusinessRollsToNextDay(t *testing.T) {
+	created := time.Date(2026, 3, 9, 16, 0, 0, 0, time.UTC) // 1h left today
+	got := DueAtBusiness(created, 2, weekdays9to5, time.UTC)
+	if want := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestDueAtBusinessSkipsWeekend(t *testing.T) {
+	created := time.Date(2026, 3, 13, 16, 0, 0, 0, time.UTC) // Friday 16:00
+	got := DueAtBusiness(created, 2, weekdays9to5, time.UTC)
+	if want := time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC); !got.Equal(want) { // Monday 10:00
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}
+
+func TestDueAtBusinessSkipsHoliday(t *testing.T) {
+	cal := weekdays9to5
+	cal.Holidays = []string{"2026-03-10"}
+	created := time.Date(2026, 3, 9, 16, 0, 0, 0, time.UTC)
+	got := DueAtBusiness(created, 2, cal, time.UTC)
+	if want := time.Date(2026, 3, 11, 10, 0, 0, 0, time.UTC); !got.Equal(want) { // Wednesday
+		t.Fatalf("due = %v, want %v", got, want)
+	}
+}

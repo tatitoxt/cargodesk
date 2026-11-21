@@ -38,6 +38,11 @@ explains how it got there.
 - **Internal SLA**: per-priority "time to quote" policy (defaults: urgent 2h,
   high 8h, normal 24h, low 72h; admins can change it). Status is shown as
   on track / at risk (last 2h) / breached / met / missed.
+- **Business-hours calendar**: admins can set a weekly working window
+  (ISO weekdays + start/end minute, in the org timezone) plus holiday dates.
+  With a calendar, SLA deadlines count business minutes — a request opened
+  Friday 16:00 under a Mon-Fri 9-17 calendar gets its remaining hours on
+  Monday. Without one, SLAs count wall-clock hours.
 - **Auditable timeline**: every change writes an append-only event (actor,
   action, from/to state, reason, change data, timestamp, correlation ID) in the same
   transaction as the change. PostgreSQL triggers reject `UPDATE`/`DELETE`/`TRUNCATE` on events.
@@ -208,7 +213,8 @@ No external API keys are used or required.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
 - One currency per quote and no pricing logic; quotes are entered manually.
-- One timezone per organization; no business-hours SLA calendar.
+- One timezone per organization; the business-hours calendar is a single
+  weekly window (no per-day windows, no half-days).
 - Delivery "evidence" is a text record (received by, time, note); no file uploads.
 - No notifications (email/WhatsApp), no maps/GPS, no customer portal.
 - Organizations and users are created by the seed only; there is no admin UI for them.
@@ -218,7 +224,7 @@ No external API keys are used or required.
 
 1. Real authentication (OIDC) with the existing role model.
 2. Organization and user management for admins.
-3. Business-hours SLA calendars and SLA for later stages (e.g. time to schedule).
+3. SLA for later stages (e.g. time to schedule) and per-day business windows.
 4. Notifications for breached SLAs and due next actions.
 5. Attachments for delivery evidence with retention rules.
 

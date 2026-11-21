@@ -122,3 +122,96 @@ func DueToday(t *time.Time, now time.Time, loc *time.Location) bool {
 	start, end := DayBounds(now, loc)
 	return !t.Before(start) && t.Before(end)
 }
+
+// Calendar describes which minutes of a week count toward an SLA, in the
+// organization's timezone (days are ISO weekdays: 1 = Monday .. 7 = Sunday).
+type Calendar struct {
+	Days        []int    `json:"days"`
+	StartMinute int      `json:"start_minute"`
+	EndMinute   int      `json:"end_minute"`
+	Holidays    []string `json:"holidays"` // YYYY-MM-DD, in the org timezone
+}
+
+func (c Calendar) Validate() error {
+	seen := map[int]bool{}
+	for _, d := range c.Days {
+		if d < 1 || d > 7 || seen[d] {
+			return fmt.Errorf("days must be unique ISO weekdays 1-7, got %d", d)
+		}
+		seen[d] = true
+	}
+	if len(c.Days) == 0 {
+		return fmt.Errorf("days must name at least one working day")
+	}
+	if c.StartMinute < 0 || c.EndMinute > 1440 || c.StartMinute >= c.EndMinute {
+		return fmt.Errorf("start_minute/end_minute must satisfy 0 <= start < end <= 1440")
+	}
+	for _, h := range c.Holidays {
+		if _, err := time.Parse("2006-01-02", h); err != nil {
+			return fmt.Errorf("holiday %q is not YYYY-MM-DD", h)
+		}
+	}
+	return nil
+}
+
+func (c Calendar) working(d time.Time) bool {
+	if !contains(c.Days, isoWeekday(d)) {
+		return false
+	}
+	for _, h := range c.Holidays {
+		if d.Format("2006-01-02") == h {
+			return false
+		}
+	}
+	return true
+}
+
+func isoWeekday(t time.Time) int {
+	wd := int(t.Weekday())
+	if wd == 0 {
+		return 7
+	}
+	return wd
+}
+
+func contains(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// DueAtBusiness is DueAt measured in business minutes instead of wall-clock
+// hours: the clock runs only inside the calendar's daily windows on working,
+// non-holiday days, evaluated in loc. createdAt instant is preserved (no
+// rounding); the result is UTC.
+func DueAtBusiness(createdAt time.Time, hours int, c Calendar, loc *time.Location) time.Time {
+	remaining := hours * 60
+	cur := createdAt.In(loc)
+	// Each iteration skips at least one calendar day or consumes a full window.
+	for i := 0; i < 4*366; i++ {
+		dayStart := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, loc)
+		if !c.working(cur) {
+			cur = dayStart.AddDate(0, 0, 1)
+			continue
+		}
+		winStart := dayStart.Add(time.Duration(c.StartMinute) * time.Minute)
+		winEnd := dayStart.Add(time.Duration(c.EndMinute) * time.Minute)
+		if !cur.Before(winEnd) {
+			cur = dayStart.AddDate(0, 0, 1)
+			continue
+		}
+		if cur.Before(winStart) {
+			cur = winStart
+		}
+		left := int(winEnd.Sub(cur).Minutes())
+		if left >= remaining {
+			return cur.Add(time.Duration(remaining) * time.Minute).UTC()
+		}
+		remaining -= left
+		cur = winEnd
+	}
+	return createdAt.UTC()
+}

@@ -193,7 +193,7 @@ func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShi
 			WHERE id = $1 RETURNING reference_prefix, next_reference - 1`, a.Org.ID).Scan(&prefix, &n); err != nil {
 			return err
 		}
-		policy, err := slaPolicy(ctx, tx, a.Org.ID)
+		due, err := dueAt(ctx, tx, a, now, in.Priority)
 		if err != nil {
 			return err
 		}
@@ -205,7 +205,7 @@ func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShi
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) RETURNING id`,
 			a.Org.ID, ref, in.AccountName, in.ContactLabel, in.Origin, in.Destination, in.CargoType, in.RequiredDate,
 			in.Notes, in.Priority, in.OwnerID, in.NextActionAt, in.NextActionNote,
-			sla.DueAt(now, in.Priority, policy), a.UserID, now).Scan(&id)
+			due, a.UserID, now).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -561,12 +561,12 @@ func (s *Store) Assign(ctx context.Context, a Actor, id string, in domain.Assign
 		set := "owner_id = $5, priority = $6, next_action_at = $7, next_action_note = $8"
 		args := []any{owner, priority, next, note}
 		if priority != l.Priority {
-			policy, err := slaPolicy(ctx, tx, a.Org.ID)
+			due, err := dueAt(ctx, tx, a, l.CreatedAt, priority)
 			if err != nil {
 				return err
 			}
 			set += ", due_at = $9"
-			args = append(args, sla.DueAt(l.CreatedAt, priority, policy))
+			args = append(args, due)
 		}
 		if err := bump(ctx, tx, a, id, in.Version, now, set, args...); err != nil {
 			return err

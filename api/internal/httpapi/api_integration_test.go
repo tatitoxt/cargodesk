@@ -622,3 +622,60 @@ func TestSavedViews(t *testing.T) {
 		t.Fatalf("re-delete: %d", r.status)
 	}
 }
+
+func TestBusinessHoursCalendar(t *testing.T) {
+	e := newEnv(t, true)
+	viewer := e.login(seed.ViewerA)
+	coord := e.login(seed.CoordinatorA)
+	admin := e.login(seed.AdminA)
+
+	calendar := map[string]any{"calendar": map[string]any{
+		"days": []int{1, 2, 3, 4, 5}, "start_minute": 540, "end_minute": 1020}}
+	if r := viewer.do("PUT", "/api/v1/settings/business-hours", calendar, nil); r.status != 403 {
+		t.Fatalf("viewer put: %d", r.status)
+	}
+	if r := coord.do("PUT", "/api/v1/settings/business-hours", calendar, nil); r.status != 403 {
+		t.Fatalf("coordinator put: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/business-hours",
+		map[string]any{"calendar": map[string]any{"days": []int{9}, "start_minute": 0, "end_minute": 60}}, nil); r.status != 422 {
+		t.Fatalf("invalid calendar: %d %s", r.status, r.raw)
+	}
+	// No calendar yet: null body, wall-clock due dates.
+	got := admin.mustOK(200, "GET", "/api/v1/settings/business-hours", nil)
+	if got["calendar"] != nil {
+		t.Fatalf("calendar before set = %v", got["calendar"])
+	}
+	base := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("wall clock"))
+	baseDue, _ := time.Parse(time.RFC3339, base["due_at"].(string))
+
+	admin.mustOK(200, "PUT", "/api/v1/settings/business-hours", calendar)
+	got = admin.mustOK(200, "GET", "/api/v1/settings/business-hours", nil)
+	cal := got["calendar"].(map[string]any)
+	if cal["start_minute"].(float64) != 540 || cal["end_minute"].(float64) != 1020 {
+		t.Fatalf("calendar = %v", cal)
+	}
+	// With a 9-5 calendar the same policy lands far later in wall-clock time.
+	withCal := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("business hours"))
+	calDue, _ := time.Parse(time.RFC3339, withCal["due_at"].(string))
+	if !calDue.After(baseDue) {
+		t.Fatalf("business due %v not after wall-clock due %v", calDue, baseDue)
+	}
+	// Org B is unaffected.
+	coordB := e.login(seed.CoordinatorB)
+	other := coordB.mustOK(201, "POST", "/api/v1/shipments", createBody("org b"))
+	otherDue, _ := time.Parse(time.RFC3339, other["due_at"].(string))
+	if !otherDue.Equal(baseDue) {
+		t.Fatalf("org B due = %v, want wall-clock %v", otherDue, baseDue)
+	}
+	// DELETE reverts to wall-clock.
+	if r := coord.do("DELETE", "/api/v1/settings/business-hours", nil, nil); r.status != 403 {
+		t.Fatalf("coordinator delete: %d", r.status)
+	}
+	admin.do("DELETE", "/api/v1/settings/business-hours", nil, nil)
+	reverted := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("reverted"))
+	revDue, _ := time.Parse(time.RFC3339, reverted["due_at"].(string))
+	if !revDue.Equal(baseDue) {
+		t.Fatalf("reverted due = %v, want %v", revDue, baseDue)
+	}
+}
