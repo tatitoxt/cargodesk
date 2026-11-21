@@ -56,7 +56,13 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"fields": []domain.FieldError{{Field: "user_id", Message: "must be a user ID"}}})
 		return
 	}
-	token, err := s.cfg.Store.CreateSession(r.Context(), in.UserID, s.now(), sessionTTL)
+	s.issueSession(w, r, in.UserID)
+}
+
+// issueSession creates a session for userID, sets the cookie and answers with
+// the resolved actor — shared by the demo and OIDC sign-ins.
+func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID string) {
+	token, err := s.cfg.Store.CreateSession(r.Context(), userID, s.now(), sessionTTL)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, r, http.StatusNotFound, "not_found", "unknown user", nil)
 		return

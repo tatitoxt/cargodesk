@@ -35,6 +35,8 @@ type Config struct {
 	// upload/download endpoints. MaxAttachmentBytes caps a single file (default 10 MiB).
 	AttachmentsDir     string
 	MaxAttachmentBytes int64
+	// OIDCVerifier validates ID tokens for POST /api/v1/auth/oidc; nil disables it.
+	OIDCVerifier *OIDCVerifier
 }
 
 type Server struct {
@@ -61,6 +63,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /healthz", s.handleHealth)
 	m.HandleFunc("GET /api/v1/auth/demo-users", s.handleDemoUsers)
 	m.HandleFunc("POST /api/v1/auth/demo-login", s.handleDemoLogin)
+	m.HandleFunc("POST /api/v1/auth/oidc", s.handleOIDCLogin)
 	m.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 	m.HandleFunc("GET /api/v1/me", s.authed(s.handleMe))
 	m.HandleFunc("GET /api/v1/users", s.authed(s.handleUsers))

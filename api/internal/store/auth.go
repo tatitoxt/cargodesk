@@ -86,3 +86,23 @@ func (s *Store) ActorByUserID(ctx context.Context, userID string) (Actor, error)
 	a.Org.Loc = loadLoc(a.Org.Timezone)
 	return a, err
 }
+
+// UserIDByEmail resolves a user id from an email address (OIDC sign-in).
+// An email shared by several organizations is ambiguous and rejected.
+func (s *Store) UserIDByEmail(ctx context.Context, email string) (string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id FROM users WHERE lower(email) = lower($1)`, email)
+	if err != nil {
+		return "", err
+	}
+	ids, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (string, error) {
+		var id string
+		return id, r.Scan(&id)
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(ids) != 1 {
+		return "", ErrNotFound
+	}
+	return ids[0], nil
+}

@@ -91,10 +91,14 @@ func serve(ctx context.Context, log *slog.Logger) error {
 				maxAtt = n
 			}
 		}
+		var oidc *httpapi.OIDCVerifier
+		if iss, cid := os.Getenv("OIDC_ISSUER"), os.Getenv("OIDC_CLIENT_ID"); iss != "" && cid != "" {
+			oidc = httpapi.NewOIDCVerifier(iss, cid)
+		}
 		srv := &http.Server{
 			Addr: env("ADDR", ":8080"),
 			Handler: httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
-				AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt}),
+				AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc}),
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       15 * time.Second,
 			WriteTimeout:      30 * time.Second,

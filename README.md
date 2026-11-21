@@ -102,7 +102,7 @@ Open <http://localhost:3000> and pick a demo user:
 | Dario Viewer | viewer | Demo Freight Co. (synthetic) |
 | Erin Other-Tenant | coordinator | Sample Haulage Ltd. (synthetic) |
 
-Demo sign-in is a user picker (enabled with `DEMO_AUTH=true`, which the compose
+Sign-in is demo by default: a user picker enabled with `DEMO_AUTH=true` (the compose
 file sets); there are no passwords. Ports are bound to `127.0.0.1` only.
 
 Things to try: filter **Overdue only**, open `CD-1002` and move it to *Needs info*
@@ -213,6 +213,8 @@ request and push to `main`:
 | `DATABASE_URL` | api | – | PostgreSQL connection string. |
 | `ADDR` | api | `:8080` | Listen address. |
 | `DEMO_AUTH` | api | `false` | Enables the seeded demo-user sign-in. |
+| `OIDC_ISSUER` | api | | OIDC issuer URL (e.g. `https://accounts.google.com`); with `OIDC_CLIENT_ID` enables `POST /api/v1/auth/oidc` — verifies the ID token against the issuer JWKS (signature, iss, aud, exp), maps the email claim to a provisioned user, and issues the same session cookie. |
+| `OIDC_CLIENT_ID` | api | | Audience required in the ID token. |
 | `SECURE_COOKIE` | api | `false` | Sets `Secure` on the session cookie (use behind HTTPS). |
 | `ATTACHMENTS_DIR` | api | `data/attachments` | Blob storage root for shipment attachments; empty disables uploads. |
 | `MAX_ATTACHMENT_BYTES` | api | `10485760` | Per-file upload size cap in bytes. |
@@ -223,7 +225,10 @@ No external API keys are used or required.
 
 ## Limitations
 
-- **Demo authentication only.** Sign-in is a seeded user picker; there is no
+- **Authentication is provisioned.** With OIDC configured, the SPA runs the
+  Authorization Code + PKCE flow and posts the ID token to `/api/v1/auth/oidc`;
+  users must still be seeded/invited by an admin (organization and role are not
+  taken from the token). Without OIDC, sign-in is the seeded user picker; there is no
   password, OIDC or SSO. Do not expose the demo to the internet.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
@@ -237,7 +242,6 @@ No external API keys are used or required.
 
 ## Roadmap
 
-1. Real authentication (OIDC) with the existing role model.
 2. Organization and user management for admins.
 3. SLA for later stages (e.g. time to schedule) and per-day business windows.
 4. Email/WhatsApp channels for the existing webhook pipeline, and SLA-breach-only filtering.
