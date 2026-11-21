@@ -46,7 +46,7 @@ explains how it got there.
 - **Notification webhooks**: admins point the org at an `https://` endpoint and can
   subscribe to a subset of event actions (`events` on `PUT /api/v1/settings/webhook` —
   e.g. `["transitioned"]` for an SLA-breach-only integration; empty means all). Every
-  and every shipment event is POSTed there as signed JSON (HMAC-SHA256
+  subscribed shipment event is POSTed there as signed JSON (HMAC-SHA256
   `X-CargoDesk-Signature`). Deliveries are queued in the same transaction as
   the event (outbox pattern) and retried with backoff by a background
   dispatcher; `POST /api/v1/settings/webhook/test` sends a ping and
