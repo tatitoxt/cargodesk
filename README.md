@@ -10,6 +10,8 @@ explicit state machine, owners, internal SLA tracking and an auditable timeline.
 > validated with real operators; the workflow assumptions are listed in
 > [`docs/spec/operations-workflow.md`](docs/spec/operations-workflow.md).
 
+![CargoDesk request board with SLA tracking](docs/img/board.png)
+
 ## Problem
 
 A small logistics operation coordinates requests, quotes, assignment and
