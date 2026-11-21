@@ -1,13 +1,16 @@
 package httpapi_test
 
 import (
-	"context"
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -34,12 +37,16 @@ type env struct {
 	pool *pgxpool.Pool
 }
 
-func newEnv(t *testing.T, demo bool) *env {
+func newEnv(t *testing.T, demo bool, attachmentsDir ...string) *env {
 	pool := testdb.Fresh(t)
 	e := &env{t: t, pool: pool}
 	now := testdb.Now
 	e.now.Store(&now)
-	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: demo,
+	dir := ""
+	if len(attachmentsDir) > 0 {
+		dir = attachmentsDir[0]
+	}
+	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: demo, AttachmentsDir: dir,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: func() time.Time { return *e.now.Load() }})
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
@@ -775,5 +782,86 @@ func TestWebhookNotifications(t *testing.T) {
 	dels, _ := r.body["deliveries"].([]any)
 	if len(dels) == 0 || dels[0].(map[string]any)["delivered"] != true {
 		t.Fatalf("deliveries log: %s", r.raw)
+	}
+}
+
+func TestAttachments(t *testing.T) {
+	e := newEnv(t, true, t.TempDir())
+	coord := e.login(seed.CoordinatorA)
+	viewer := e.login(seed.ViewerA)
+	sh := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Attach Org"))
+	id := sh["id"].(string)
+
+	upload := func(c *client, name, contentType string, data []byte) resp {
+		var buf bytes.Buffer
+		wr := multipart.NewWriter(&buf)
+		part, _ := wr.CreateFormFile("file", name)
+		part.Write(data)
+		wr.Close()
+		return c.do("POST", "/api/v1/shipments/"+id+"/attachments", buf.String(),
+			map[string]string{"Content-Type": wr.FormDataContentType()})
+	}
+
+	payload := []byte("POD signature scan bytes")
+	up := upload(coord, "pod-1.pdf", "application/pdf", payload)
+	if up.status != 201 {
+		t.Fatalf("upload: %d %s", up.status, up.raw)
+	}
+	att := up.body
+	sum := sha256.Sum256(payload)
+	if att["sha256"] != hex.EncodeToString(sum[:]) || att["filename"] != "pod-1.pdf" {
+		t.Fatalf("bad metadata: %v", att)
+	}
+
+	// Viewers can list and download but not upload or delete.
+	if r := upload(viewer, "x.txt", "text/plain", []byte("x")); r.status != 403 {
+		t.Fatalf("viewer upload: %d", r.status)
+	}
+	list := viewer.mustOK(200, "GET", "/api/v1/shipments/"+id+"/attachments", nil)
+	if len(list["attachments"].([]any)) != 1 {
+		t.Fatalf("list: %v", list)
+	}
+	dl := viewer.do("GET", "/api/v1/shipments/"+id+"/attachments/"+att["id"].(string), nil, nil)
+	if dl.status != 200 || !bytes.Equal(dl.raw, payload) {
+		t.Fatalf("download: %d %s", dl.status, dl.raw)
+	}
+	if dl.header.Get("Content-Disposition") == "" {
+		t.Fatal("missing Content-Disposition")
+	}
+
+	// Audit events record the upload.
+	evs := coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/events", nil)
+	found := false
+	for _, ev := range evs["events"].([]any) {
+		if ev.(map[string]any)["action"] == "attachment_added" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no attachment_added audit event")
+	}
+
+	// Tenant isolation: another org's shipment id returns 404 across all ops.
+	other := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Attach Org B"))
+	bid := other["id"].(string)
+	for _, tc := range [][2]string{
+		{"GET", "/api/v1/shipments/" + bid + "/attachments/" + att["id"].(string)},
+		{"DELETE", "/api/v1/shipments/" + bid + "/attachments/" + att["id"].(string)},
+	} {
+		if r := coord.do(tc[0], tc[1], nil, nil); r.status != 404 {
+			t.Fatalf("%s: got %d", tc[1], r.status)
+		}
+	}
+
+	// Delete removes the row and the download stops working.
+	if r := coord.do("DELETE", "/api/v1/shipments/"+id+"/attachments/"+att["id"].(string), nil, nil); r.status != 204 {
+		t.Fatalf("delete: %d", r.status)
+	}
+	if r := viewer.do("GET", "/api/v1/shipments/"+id+"/attachments/"+att["id"].(string), nil, nil); r.status != 404 {
+		t.Fatalf("post-delete download: %d", r.status)
+	}
+	list = coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/attachments", nil)
+	if len(list["attachments"].([]any)) != 0 {
+		t.Fatalf("post-delete list: %v", list)
 	}
 }

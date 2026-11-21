@@ -63,6 +63,13 @@ explains how it got there.
   returns `total` alongside the page, and sorts by a unique tiebreaker so
   pages are stable under concurrent writes; the board pages at 50 rows and
   resets to page 1 on any filter change.
+- **Attachments**: coordinators+ upload files per shipment via multipart
+  `POST /api/v1/shipments/{id}/attachments`; every member can list and download
+  (`GET .../attachments`, `GET .../attachments/{aid}`), and coordinators+ can
+  delete. Blobs live under `ATTACHMENTS_DIR` (storage keys are random, filenames
+  are sanitized, and path-escape attempts are rejected); size is capped by
+  `MAX_ATTACHMENT_BYTES` (default 10 MiB) and each file's SHA-256 is stored with
+  the row. Uploads and deletes write audit events.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
 - **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
 - **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
@@ -207,6 +214,8 @@ request and push to `main`:
 | `ADDR` | api | `:8080` | Listen address. |
 | `DEMO_AUTH` | api | `false` | Enables the seeded demo-user sign-in. |
 | `SECURE_COOKIE` | api | `false` | Sets `Secure` on the session cookie (use behind HTTPS). |
+| `ATTACHMENTS_DIR` | api | `data/attachments` | Blob storage root for shipment attachments; empty disables uploads. |
+| `MAX_ATTACHMENT_BYTES` | api | `10485760` | Per-file upload size cap in bytes. |
 | `API_URL` | web (build time) | `http://localhost:8080` | Where the Next.js proxy forwards `/api/v1/*`. |
 | `CARGODESK_TEST_DATABASE_URL` | Go tests | – | Disposable database for integration tests. |
 

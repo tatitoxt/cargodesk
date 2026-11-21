@@ -31,6 +31,10 @@ type Config struct {
 	Clock        func() time.Time
 	DemoAuth     bool
 	SecureCookie bool
+	// AttachmentsDir is the blob root for shipment attachments; empty disables
+	// upload/download endpoints. MaxAttachmentBytes caps a single file (default 10 MiB).
+	AttachmentsDir     string
+	MaxAttachmentBytes int64
 }
 
 type Server struct {
@@ -66,6 +70,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/shipments/{id}/events", s.authed(s.handleEvents))
 	m.HandleFunc("POST /api/v1/shipments/{id}/transitions", s.editor(s.idempotent("transition", s.handleTransition)))
 	m.HandleFunc("POST /api/v1/shipments/{id}/events", s.editor(s.handleAddEvent))
+	m.HandleFunc("GET /api/v1/shipments/{id}/attachments", s.authed(s.handleListAttachments))
+	m.HandleFunc("POST /api/v1/shipments/{id}/attachments", s.editor(s.handleUploadAttachment))
+	m.HandleFunc("GET /api/v1/shipments/{id}/attachments/{aid}", s.authed(s.handleDownloadAttachment))
+	m.HandleFunc("DELETE /api/v1/shipments/{id}/attachments/{aid}", s.editor(s.handleDeleteAttachment))
 	m.HandleFunc("PATCH /api/v1/shipments/{id}/assignment", s.editor(s.handleAssign))
 	m.HandleFunc("GET /api/v1/exports/shipments.csv", s.authed(s.handleExport))
 	m.HandleFunc("GET /api/v1/views", s.authed(s.handleListViews))

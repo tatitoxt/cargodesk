@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -84,9 +85,16 @@ func serve(ctx context.Context, log *slog.Logger) error {
 			return err
 		}
 		demo := env("DEMO_AUTH", "false") == "true"
+		var maxAtt int64 = 10 << 20
+		if v := os.Getenv("MAX_ATTACHMENT_BYTES"); v != "" {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+				maxAtt = n
+			}
+		}
 		srv := &http.Server{
-			Addr:              env("ADDR", ":8080"),
-			Handler:           httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true"}),
+			Addr: env("ADDR", ":8080"),
+			Handler: httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
+				AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt}),
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       15 * time.Second,
 			WriteTimeout:      30 * time.Second,
