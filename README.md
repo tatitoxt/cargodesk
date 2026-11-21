@@ -229,7 +229,7 @@ No external API keys are used or required.
   Authorization Code + PKCE flow and posts the ID token to `/api/v1/auth/oidc`;
   users must still be seeded/invited by an admin (organization and role are not
   taken from the token). Without OIDC, sign-in is the seeded user picker; there is no
-  password, OIDC or SSO. Do not expose the demo to the internet.
+  password. Do not expose the demo to the internet.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
 - One currency per quote and no pricing logic; quotes are entered manually.
