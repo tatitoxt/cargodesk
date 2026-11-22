@@ -297,13 +297,13 @@ No external API keys are used or required.
   email (SMTP) and WhatsApp (Meta Cloud API); no maps/GPS or customer portal.
 - Sign-up is open to anyone who reaches the API (per-IP rate limited); a real
   deployment would gate it behind a billing or invite flow.
-- No load testing or security audit has been performed.
+- No security audit has been performed.
 
 ## Roadmap
 
 1. Template-based WhatsApp messages (the Cloud API text type ships today;
    pre-approved templates are needed for outside-window delivery).
-2. Load testing at realistic volume and a security audit.
+2. Security audit.
 
 ## License
 
@@ -311,4 +311,4 @@ No external API keys are used or required.
 
 ## Benchmarks
 
-`go test -bench . ./api/internal/httpapi/` drives the real HTTP API against Postgres: full shipment lifecycle (create → deliver) at **11.2 ms/shipment** (~89/sec) and filtered board lists at 1.8 ms. See [docs/benchmarks.md](docs/benchmarks.md).
+`go test -bench . ./api/internal/httpapi/` drives the real HTTP API against Postgres: full shipment lifecycle (create → deliver) at **11.2 ms/shipment** sequential, **~176 shipments/sec** under 8-way concurrency with **0 errors in 2,400 requests**, and filtered board lists at 1.8 ms. See [docs/benchmarks.md](docs/benchmarks.md).

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,4 +116,62 @@ func BenchmarkListShipments(b *testing.B) {
 			b.Fatalf("list: %d", st)
 		}
 	}
+}
+
+// Concurrent load: each parallel worker owns an HTTP client + session and
+// runs the full create->deliver lifecycle. Any unexpected status or
+// optimistic-lock failure is counted and reported — a healthy run has 0.
+// Run: go test -p 1 -run '^$' -bench Concurrent -benchtime 200x ./internal/httpapi/
+func BenchmarkConcurrentLifecycle(b *testing.B) {
+	pool := testdb.Fresh(b)
+	now := testdb.Now
+	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: true,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: func() time.Time { return now }})
+	srv := httptest.NewServer(h)
+	b.Cleanup(srv.Close)
+
+	var failures atomic.Int64
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		jar, _ := cookiejar.New(nil)
+		c := &benchClient{srv: srv, http: &http.Client{Jar: jar}}
+		body, _ := json.Marshal(map[string]string{"user_id": seed.CoordinatorA})
+		res, err := c.http.Post(srv.URL+"/api/v1/auth/demo-login", "application/json", bytes.NewReader(body))
+		if err != nil || res.StatusCode != 200 {
+			res.Body.Close()
+			b.Fatalf("login: %v", err)
+		}
+		res.Body.Close()
+
+		i := 0
+		for pb.Next() {
+			i++
+			st, sh := c.do(b, "POST", "/api/v1/shipments", map[string]any{
+				"account_name": fmt.Sprintf("Load %d", i), "contact_label": "Load contact",
+				"origin": "A (demo)", "destination": "B (demo)",
+				"cargo_type": "palletized", "required_date": "2026-03-20", "priority": "high",
+			})
+			if st != 201 {
+				failures.Add(1)
+				continue
+			}
+			id, ver := sh["id"].(string), int(sh["version"].(float64))
+			for _, body := range []map[string]any{
+				{"to": "quoted", "quote": map[string]any{"amount_cents": 125000, "currency": "USD"}},
+				{"to": "accepted"},
+				{"to": "scheduled", "pickup_at": now.Add(24 * time.Hour), "carrier": "Load Carrier"},
+				{"to": "in_transit"},
+				{"to": "delivered", "evidence": map[string]any{"received_by": "Dock", "delivered_at": now}},
+			} {
+				body["version"] = ver
+				st, sh = c.do(b, "POST", fmt.Sprintf("/api/v1/shipments/%s/transitions", id), body)
+				if st != 200 {
+					failures.Add(1)
+					break
+				}
+				ver = int(sh["version"].(float64))
+			}
+		}
+	})
+	b.ReportMetric(float64(failures.Load()), "failures")
 }
