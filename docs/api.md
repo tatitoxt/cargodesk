@@ -15,6 +15,7 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | POST | `/api/v1/auth/demo-login` | – | `{"user_id": "…"}` → sets an HttpOnly session cookie (12h). |
 | POST | `/api/v1/auth/logout` | any | Deletes the session. |
 | POST | `/api/v1/auth/password-login` | – | `{"email": "…", "password": "…"}` → session cookie; body carries `must_change_password` for invited users. Wrong credentials → `401 bad_credentials` (same for unknown email). |
+| POST | `/api/v1/signup` | – | `{"slug", "name", "timezone", "reference_prefix", "email", "display_name", "password"}` → provisions an organization with default SLA policies plus its first admin, then issues the session cookie. `409 slug_taken`/`email_taken`, `422` field errors, `429` after 10 sign-ups/hour per IP. |
 | GET | `/api/v1/me` | any | Current user, role and organization. |
 | POST | `/api/v1/me/password` | any | `{"current_password": "…", "new_password": "…"}` → `204`; wrong current → `401`, weak (under 10 chars or same) → `422`. Clears `must_change_password`. |
 | GET | `/api/v1/users` | any | Users of the caller's organization (owner picker). |

@@ -43,8 +43,9 @@ type Config struct {
 }
 
 type Server struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg     Config
+	mux     *http.ServeMux
+	signups *signupLimiter
 }
 
 func New(cfg Config) *Server {
@@ -54,7 +55,7 @@ func New(cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	s := &Server{cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, mux: http.NewServeMux(), signups: newSignupLimiter()}
 	s.routes()
 	return s
 }
@@ -68,6 +69,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/auth/demo-login", s.handleDemoLogin)
 	m.HandleFunc("POST /api/v1/auth/oidc", s.handleOIDCLogin)
 	m.HandleFunc("POST /api/v1/auth/password-login", s.handlePasswordLogin)
+	m.HandleFunc("POST /api/v1/signup", s.handleSignup)
 	m.HandleFunc("POST /api/v1/users/invite", s.authed(s.handleInvite))
 	m.HandleFunc("POST /api/v1/me/password", s.authed(s.handleChangePassword))
 	m.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)

@@ -68,7 +68,9 @@ function Login() {
         </label>
         <button type="submit">Sign in</button>
       </form>
-      <p className="muted">Or sign in as a seeded demo user:</p>
+      <p className="muted">
+        New here? <a href="/signup">Create an organization</a> — or sign in as a seeded demo user:
+      </p>
       <div className="users">
         {users.map((u) => (
           <button key={u.id} onClick={() => signIn(u.id)} aria-label={`Sign in as ${u.display_name}`}>

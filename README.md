@@ -275,8 +275,11 @@ No external API keys are used or required.
   temporary password (`POST /api/v1/users/invite`); the invitee signs in with
   email + password (`POST /api/v1/auth/password-login`) and is forced through a
   password change (`POST /api/v1/me/password`, bcrypt, 10+ chars) before using
-  the app. Without OIDC, sign-in is the seeded user picker. Do not expose the
-  demo to the internet.
+  the app. A third path is self-service sign-up: `POST /api/v1/signup`
+  provisions an organization plus its first admin (bcrypt password, default SLA
+  policy, session issued immediately) behind a per-IP sliding-window limiter —
+  UI at `/signup`. Without OIDC, sign-in is the seeded user picker. Do not expose
+  the demo to the internet.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
 - One currency per quote and no pricing logic; quotes are entered manually.
@@ -284,7 +287,8 @@ No external API keys are used or required.
   evidence is a generic attachment rather than a dedicated field.
 - Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks
   and email (SMTP); no WhatsApp, maps/GPS, or customer portal.
-- Organizations are created by the seed only.
+- Sign-up is open to anyone who reaches the API (per-IP rate limited); a real
+  deployment would gate it behind a billing or invite flow.
 - No load testing or security audit has been performed.
 
 ## Roadmap
