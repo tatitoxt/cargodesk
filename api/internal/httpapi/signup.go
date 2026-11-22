@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,8 +21,10 @@ type signupLimiter struct {
 	window time.Duration
 }
 
-func newSignupLimiter() *signupLimiter {
-	return &signupLimiter{hits: map[string][]time.Time{}, max: 10, window: time.Hour}
+func newSignupLimiter() *signupLimiter { return newLimiter(10, time.Hour) }
+
+func newLimiter(max int, window time.Duration) *signupLimiter {
+	return &signupLimiter{hits: map[string][]time.Time{}, max: max, window: window}
 }
 
 func (l *signupLimiter) allow(ip string, now time.Time) bool {
@@ -42,7 +45,17 @@ func (l *signupLimiter) allow(ip string, now time.Time) bool {
 	return true
 }
 
-func clientIP(r *http.Request) string {
+// clientIP is the TCP peer, or — when TrustProxy is set because the API only
+// sits behind the Next.js proxy — the last X-Forwarded-For hop it appended.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.TrustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if ip := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(ip) != nil {
+				return ip
+			}
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -54,7 +67,11 @@ func clientIP(r *http.Request) string {
 // signs the admin in — the self-service path that used to require the seed.
 // Public and per-IP rate limited.
 func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
-	if !s.signups.allow(clientIP(r), s.now()) {
+	if !s.cfg.SignupEnabled {
+		writeError(w, r, http.StatusNotFound, "signup_disabled", "self-service sign-up is not enabled on this server", nil)
+		return
+	}
+	if !s.signups.allow(s.clientIP(r), s.now()) {
 		writeError(w, r, http.StatusTooManyRequests, "too_many_requests", "too many sign-ups from this address — try later", nil)
 		return
 	}

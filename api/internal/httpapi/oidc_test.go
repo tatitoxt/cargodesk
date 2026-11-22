@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -80,8 +81,8 @@ func TestOIDCLogin(t *testing.T) {
 
 	valid := issuer.sign(map[string]any{
 		"iss": issuer.srv.URL, "aud": "cargodesk-web", "sub": "ext-1",
-		"email": "ana.coordinator@cargodesk.example",
-		"exp":   e.now.Load().Add(time.Hour).Unix(), "iat": e.now.Load().Unix(),
+		"email": "ana.coordinator@cargodesk.example", "email_verified": true,
+		"exp": e.now.Load().Add(time.Hour).Unix(), "iat": e.now.Load().Unix(),
 	})
 	res := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": valid}, nil)
 	if res.status != 200 {
@@ -100,7 +101,7 @@ func TestOIDCLogin(t *testing.T) {
 	// wrong audience -> 401
 	wrongAud := issuer.sign(map[string]any{
 		"iss": issuer.srv.URL, "aud": "someone-else", "sub": "ext-1",
-		"email": "ana.coordinator@cargodesk.example", "exp": e.now.Load().Add(time.Hour).Unix(),
+		"email": "ana.coordinator@cargodesk.example", "email_verified": true, "exp": e.now.Load().Add(time.Hour).Unix(),
 	})
 	if r := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": wrongAud}, nil); r.status != 401 {
 		t.Fatalf("wrong audience: %d", r.status)
@@ -109,7 +110,7 @@ func TestOIDCLogin(t *testing.T) {
 	// expired -> 401
 	expired := issuer.sign(map[string]any{
 		"iss": issuer.srv.URL, "aud": "cargodesk-web", "sub": "ext-1",
-		"email": "ana.coordinator@cargodesk.example", "exp": e.now.Load().Add(-time.Hour).Unix(),
+		"email": "ana.coordinator@cargodesk.example", "email_verified": true, "exp": e.now.Load().Add(-time.Hour).Unix(),
 	})
 	if r := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": expired}, nil); r.status != 401 {
 		t.Fatalf("expired token: %d", r.status)
@@ -118,10 +119,27 @@ func TestOIDCLogin(t *testing.T) {
 	// verified but unknown email -> 403 (admin provisioning required)
 	stranger := issuer.sign(map[string]any{
 		"iss": issuer.srv.URL, "aud": "cargodesk-web", "sub": "ext-2",
-		"email": "stranger@nowhere.example", "exp": e.now.Load().Add(time.Hour).Unix(),
+		"email": "stranger@nowhere.example", "email_verified": true, "exp": e.now.Load().Add(time.Hour).Unix(),
 	})
 	if r := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": stranger}, nil); r.status != 403 {
 		t.Fatalf("unknown user: %d", r.status)
+	}
+
+	// unverified email -> 401, even for a provisioned user
+	unverified := issuer.sign(map[string]any{
+		"iss": issuer.srv.URL, "aud": "cargodesk-web", "sub": "ext-3",
+		"email": "ana.coordinator@cargodesk.example", "email_verified": false, "exp": e.now.Load().Add(time.Hour).Unix(),
+	})
+	if r := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": unverified}, nil); r.status != 401 {
+		t.Fatalf("unverified email: %d", r.status)
+	}
+
+	// self-registered accounts are never matched by email
+	if _, err := e.pool.Exec(context.Background(), `UPDATE users SET self_registered = true WHERE email = 'ana.coordinator@cargodesk.example'`); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.do("POST", "/api/v1/auth/oidc", map[string]string{"id_token": valid}, nil); r.status != 403 {
+		t.Fatalf("self-registered account matched: %d", r.status)
 	}
 }
 

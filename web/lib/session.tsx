@@ -18,7 +18,13 @@ export function RequireSession({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   useEffect(() => {
     api<Me>("/me")
-      .then(setMe)
+      .then((m) => {
+        if (m.must_change_password && pathname !== "/password") {
+          router.replace(`/password?next=${encodeURIComponent(pathname)}`);
+          return;
+        }
+        setMe(m);
+      })
       .catch((e) => {
         if (e instanceof ApiError && e.status === 401) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
       });

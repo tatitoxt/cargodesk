@@ -818,7 +818,12 @@ func (s *Server) handleGetSlack(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"url": url})
+	// The incoming-webhook URL is a posting credential: only admins see it.
+	if !a.Role.CanConfigure() {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": url != ""})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": url, "configured": url != ""})
 }
 
 func (s *Server) handlePutSlack(w http.ResponseWriter, r *http.Request) {
@@ -1046,6 +1051,11 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(in.Email))
+	if !s.logins.allow(key, s.now()) || !s.logins.allow("ip:"+s.clientIP(r), s.now()) {
+		writeError(w, r, http.StatusTooManyRequests, "too_many_requests", "too many sign-in attempts — try again later", nil)
 		return
 	}
 	id, mustChange, err := s.cfg.Store.LoginByPassword(r.Context(), in.Email, in.Password)

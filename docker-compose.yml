@@ -29,6 +29,8 @@ services:
     environment:
       DATABASE_URL: postgres://cargodesk:cargodesk@db:5432/cargodesk?sslmode=disable
       DEMO_AUTH: "true"
+      SIGNUP_ENABLED: "true"
+      TRUST_PROXY: "true"
       ADDR: ":8080"
     ports:
       - "127.0.0.1:8080:8080"

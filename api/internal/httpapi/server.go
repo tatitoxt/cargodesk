@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tatitoxt/cargodesk/api/internal/domain"
@@ -40,12 +41,17 @@ type Config struct {
 	// EmailEnabled reports whether SMTP env config is present (SMTP_HOST); the
 	// settings UI uses it to explain pending email deliveries.
 	EmailEnabled bool
+	// SignupEnabled exposes public POST /api/v1/signup (off by default).
+	SignupEnabled bool
+	// TrustProxy uses X-Forwarded-For for rate-limit keys (API behind the web proxy).
+	TrustProxy bool
 }
 
 type Server struct {
 	cfg     Config
 	mux     *http.ServeMux
 	signups *signupLimiter
+	logins  *signupLimiter
 }
 
 func New(cfg Config) *Server {
@@ -55,7 +61,7 @@ func New(cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	s := &Server{cfg: cfg, mux: http.NewServeMux(), signups: newSignupLimiter()}
+	s := &Server{cfg: cfg, mux: http.NewServeMux(), signups: newSignupLimiter(), logins: newLimiter(10, 15*time.Minute)}
 	s.routes()
 	return s
 }
@@ -138,10 +144,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.cfg.Logger.Error("panic", "correlation_id", corr, "panic", rec)
 			writeError(sw, r, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		}
-		s.cfg.Logger.Info("request", "method", r.Method, "path", r.URL.Path, "status", sw.status,
+		s.cfg.Logger.Info("request", "method", r.Method, "path", logPath(r.URL.Path), "status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(), "correlation_id", corr, "user_id", info.userID)
 	}()
 	s.mux.ServeHTTP(sw, r)
+}
+
+// logPath keeps bearer-like path segments (public tracking tokens) out of logs.
+func logPath(p string) string {
+	if strings.HasPrefix(p, "/api/v1/track/") {
+		return "/api/v1/track/[redacted]"
+	}
+	return p
 }
 
 var corrRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
@@ -199,8 +213,25 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 		}
 		i := info(r)
 		i.actor, i.userID = a, a.UserID
+		if a.MustChangePassword && !passwordChangeAllowed(r) {
+			writeError(w, r, http.StatusForbidden, "password_change_required",
+				"set a new password before using the API", nil)
+			return
+		}
 		next(w, r)
 	}
+}
+
+// passwordChangeAllowed lists the routes a member on a temporary password may
+// call: reading their profile and replacing the password.
+func passwordChangeAllowed(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/me":
+		return true
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/me/password":
+		return true
+	}
+	return false
 }
 
 // editor requires an authenticated coordinator or admin.
@@ -284,6 +315,8 @@ func (s *Server) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, store.ErrLastAdmin):
 		writeError(w, r, http.StatusConflict, "last_admin",
 			"the organization must keep at least one admin", nil)
+	case errors.Is(err, store.ErrUserHasHistory):
+		writeError(w, r, http.StatusConflict, "user_has_history", err.Error(), nil)
 	case errors.Is(err, store.ErrClosed):
 		writeError(w, r, http.StatusConflict, "shipment_closed", "shipment is in a terminal state", nil)
 	default:

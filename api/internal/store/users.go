@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"net/mail"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/tatitoxt/cargodesk/api/internal/domain"
 )
@@ -18,14 +20,45 @@ var (
 	ErrEmailTaken = errors.New("a user with this email already exists")
 	// ErrLastAdmin guards organization admin demotion/removal.
 	ErrLastAdmin = errors.New("the organization must keep at least one admin")
+	// ErrUserHasHistory blocks deleting a member referenced by shipments or
+	// audit events; demote them to viewer instead.
+	ErrUserHasHistory = errors.New("this member has shipment history; change their role instead of removing them")
 )
+
+// validEmail accepts a bare addr-spec (no display name) of at most 254 bytes.
+func validEmail(email string) bool {
+	if len(email) < 3 || len(email) > 254 || strings.ContainsAny(email, " <>") {
+		return false
+	}
+	a, err := mail.ParseAddress(email)
+	return err == nil && a.Address == email && a.Name == ""
+}
+
+// passwordProblem returns why a new password is unacceptable, or "".
+// bcrypt only accepts up to 72 bytes.
+func passwordProblem(pw string) string {
+	switch {
+	case len(pw) < minPasswordLen:
+		return "must be at least 10 characters"
+	case len(pw) > maxPasswordBytes:
+		return "must be at most 72 bytes"
+	}
+	return ""
+}
 
 // CreateUser adds a member to the caller's organization; admin-only callers.
 func (s *Store) CreateUser(ctx context.Context, a Actor, email, displayName string, role domain.Role) (User, error) {
+	return s.createUser(ctx, a, email, displayName, role, nil)
+}
+
+// createUser inserts the member, with a password hash when passwordHash is
+// non-nil (invites), in a single statement so no credential-less row is left
+// behind on failure.
+func (s *Store) createUser(ctx context.Context, a Actor, email, displayName string, role domain.Role, passwordHash []byte) (User, error) {
 	var fields []domain.FieldError
 	email = strings.ToLower(strings.TrimSpace(email))
 	displayName = strings.TrimSpace(displayName)
-	if !strings.Contains(email, "@") || len(email) > 254 {
+	if !validEmail(email) {
 		fields = append(fields, domain.FieldError{Field: "email", Message: "must be a valid email address"})
 	}
 	if displayName == "" || len([]rune(displayName)) > 120 {
@@ -41,9 +74,9 @@ func (s *Store) CreateUser(ctx context.Context, a Actor, email, displayName stri
 	}
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (organization_id, email, display_name, role)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id`, a.Org.ID, email, displayName, role).Scan(&u.ID)
+		INSERT INTO users (organization_id, email, display_name, role, password_hash, must_change_password)
+		VALUES ($1, $2, $3, $4, $5::bytea, $5::bytea IS NOT NULL)
+		RETURNING id`, a.Org.ID, email, displayName, role, passwordHash).Scan(&u.ID)
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return User{}, ErrEmailTaken
@@ -56,86 +89,110 @@ func (s *Store) CreateUser(ctx context.Context, a Actor, email, displayName stri
 }
 
 // UpdateUser changes a member's role and/or display name inside the caller's
-// org. Demoting the last admin is rejected.
+// org. Only the provided fields are written. Demoting the last admin is
+// rejected; the org's admin rows are locked so concurrent demotions cannot
+// both pass the check.
 func (s *Store) UpdateUser(ctx context.Context, a Actor, userID string, role *domain.Role, displayName *string) (User, error) {
-	var u User
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, display_name, role FROM users WHERE organization_id = $1 AND id = $2`,
-		a.Org.ID, userID).Scan(&u.ID, &u.Email, &u.DisplayName, &u.Role)
-	if err != nil {
+	if !domain.IsUUID(userID) {
 		return User{}, ErrNotFound
 	}
-	newRole, newName := u.Role, u.DisplayName
 	var fields []domain.FieldError
 	if role != nil {
 		switch *role {
 		case domain.Viewer, domain.Coordinator, domain.Admin:
-			newRole = *role
 		default:
 			fields = append(fields, domain.FieldError{Field: "role", Message: "must be viewer, coordinator or admin"})
 		}
 	}
+	var name *string
 	if displayName != nil {
-		name := strings.TrimSpace(*displayName)
-		if name == "" || len([]rune(name)) > 120 {
+		n := strings.TrimSpace(*displayName)
+		if n == "" || len([]rune(n)) > 120 {
 			fields = append(fields, domain.FieldError{Field: "display_name", Message: "is required (max 120 characters)"})
 		}
-		newName = name
+		name = &n
 	}
 	if len(fields) > 0 {
 		return User{}, &domain.ValidationError{Fields: fields}
 	}
-	if u.Role == domain.Admin && newRole != domain.Admin {
-		if ok, err := s.anotherAdminExists(ctx, a.Org.ID, u.ID); err != nil {
-			return User{}, err
-		} else if !ok {
-			return User{}, ErrLastAdmin
+	var u User
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		if err := lockAdmins(ctx, tx, a.Org.ID); err != nil {
+			return err
 		}
-	}
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE users SET role = $3, display_name = $4
-		WHERE organization_id = $1 AND id = $2`, a.Org.ID, userID, newRole, newName)
+		var current domain.Role
+		if err := tx.QueryRow(ctx, `SELECT role FROM users WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+			a.Org.ID, userID).Scan(&current); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if role != nil && current == domain.Admin && *role != domain.Admin {
+			if ok, err := anotherAdminExists(ctx, tx, a.Org.ID, userID); err != nil {
+				return err
+			} else if !ok {
+				return ErrLastAdmin
+			}
+		}
+		return tx.QueryRow(ctx, `
+			UPDATE users SET role = COALESCE($3, role), display_name = COALESCE($4, display_name)
+			WHERE organization_id = $1 AND id = $2
+			RETURNING id, email, display_name, role`, a.Org.ID, userID, role, name).
+			Scan(&u.ID, &u.Email, &u.DisplayName, &u.Role)
+	})
 	if err != nil {
 		return User{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return User{}, ErrNotFound
-	}
-	u.Role, u.DisplayName = newRole, newName
 	return u, nil
 }
 
 // DeleteUser removes a member and their sessions. Deleting the last admin is
-// rejected.
+// rejected, as is deleting a member referenced by shipments or audit events.
 func (s *Store) DeleteUser(ctx context.Context, a Actor, userID string) error {
-	var role domain.Role
-	err := s.pool.QueryRow(ctx, `
-		SELECT role FROM users WHERE organization_id = $1 AND id = $2`,
-		a.Org.ID, userID).Scan(&role)
-	if err != nil {
+	if !domain.IsUUID(userID) {
 		return ErrNotFound
 	}
-	if role == domain.Admin {
-		if ok, err := s.anotherAdminExists(ctx, a.Org.ID, userID); err != nil {
+	return s.tx(ctx, func(tx pgx.Tx) error {
+		if err := lockAdmins(ctx, tx, a.Org.ID); err != nil {
 			return err
-		} else if !ok {
-			return ErrLastAdmin
 		}
-	}
-	tag, err := s.pool.Exec(ctx, `
-		DELETE FROM users WHERE organization_id = $1 AND id = $2`, a.Org.ID, userID)
-	if err != nil {
+		var role domain.Role
+		if err := tx.QueryRow(ctx, `SELECT role FROM users WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+			a.Org.ID, userID).Scan(&role); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if role == domain.Admin {
+			if ok, err := anotherAdminExists(ctx, tx, a.Org.ID, userID); err != nil {
+				return err
+			} else if !ok {
+				return ErrLastAdmin
+			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM users WHERE organization_id = $1 AND id = $2`, a.Org.ID, userID)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrUserHasHistory
+		}
 		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	})
 }
 
-func (s *Store) anotherAdminExists(ctx context.Context, orgID, excluding string) (bool, error) {
+// lockAdmins serializes admin-count checks within an organization.
+func lockAdmins(ctx context.Context, q querier, orgID string) error {
+	_, err := q.Exec(ctx, `SELECT id FROM users WHERE organization_id = $1 AND role = 'admin' ORDER BY id FOR UPDATE`, orgID)
+	return err
+}
+
+func anotherAdminExists(ctx context.Context, q querier, orgID, excluding string) (bool, error) {
 	var ok bool
-	err := s.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM users
 			WHERE organization_id = $1 AND role = 'admin' AND id <> $2)`,
 		orgID, excluding).Scan(&ok)
@@ -149,7 +206,10 @@ var (
 	ErrWeakPassword = errors.New("password must be at least 10 characters")
 )
 
-const minPasswordLen = 10
+const (
+	minPasswordLen   = 10
+	maxPasswordBytes = 72
+)
 
 func hashPassword(pw string) ([]byte, error) {
 	return bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
@@ -167,10 +227,6 @@ func randomPassword() (string, error) {
 // plaintext once — it is never stored or returned again. The invited member
 // must set a new password on first sign-in.
 func (s *Store) InviteUser(ctx context.Context, a Actor, email, displayName string, role domain.Role) (User, string, error) {
-	u, err := s.CreateUser(ctx, a, email, displayName, role)
-	if err != nil {
-		return User{}, "", err
-	}
 	temp, err := randomPassword()
 	if err != nil {
 		return User{}, "", err
@@ -179,9 +235,8 @@ func (s *Store) InviteUser(ctx context.Context, a Actor, email, displayName stri
 	if err != nil {
 		return User{}, "", err
 	}
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1`,
-		u.ID, hash); err != nil {
+	u, err := s.createUser(ctx, a, email, displayName, role, hash)
+	if err != nil {
 		return User{}, "", err
 	}
 	return u, temp, nil
@@ -208,8 +263,8 @@ func (s *Store) LoginByPassword(ctx context.Context, email, password string) (id
 // ChangePassword verifies the caller's current password and replaces it,
 // clearing the forced-change flag set by an invite.
 func (s *Store) ChangePassword(ctx context.Context, a Actor, current, next string) error {
-	if len(next) < minPasswordLen {
-		return ErrWeakPassword
+	if msg := passwordProblem(next); msg != "" {
+		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "new_password", Message: msg}}}
 	}
 	if current == next {
 		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "new_password", Message: "must differ from the current password"}}}

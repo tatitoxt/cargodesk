@@ -2,15 +2,12 @@
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { safeNext } from "@/lib/safe-next";
 import { api } from "@/lib/api";
 import { RequireSession } from "@/lib/session";
 import { Nav } from "@/components/Nav";
 import { ErrorBox } from "@/components/FieldErrors";
 
-function safeNext(next: string | null): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
-  return next;
-}
 
 function ChangePassword() {
   const [current, setCurrent] = useState("");

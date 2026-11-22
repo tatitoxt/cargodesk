@@ -40,6 +40,9 @@ type Actor struct {
 	DisplayName string      `json:"display_name"`
 	Role        domain.Role `json:"role"`
 	Org         Org         `json:"organization"`
+	// MustChangePassword is set for members still on an invite's temporary
+	// password; the API only lets them read /me and change the password.
+	MustChangePassword bool `json:"must_change_password"`
 }
 
 type Org struct {

@@ -51,7 +51,7 @@ func newEnv(t *testing.T, demo bool, attachmentsDir ...string) *env {
 	if len(attachmentsDir) > 0 {
 		dir = attachmentsDir[0]
 	}
-	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: demo, AttachmentsDir: dir,
+	h := httpapi.New(httpapi.Config{Store: store.New(pool), DemoAuth: demo, AttachmentsDir: dir, SignupEnabled: true,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Clock: func() time.Time { return *e.now.Load() }})
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
@@ -1672,6 +1672,14 @@ func TestPasswordInvite(t *testing.T) {
 	if r := invited.do("GET", "/api/v1/me", nil, nil); r.status != 200 {
 		t.Fatalf("me as invited member: %d", r.status)
 	}
+	// Until the temp password is replaced, the API refuses everything else.
+	if r := invited.do("GET", "/api/v1/shipments", nil, nil); r.status != 403 || r.body["error"] != "password_change_required" {
+		t.Fatalf("temp-password session reached shipments: %d %s", r.status, r.raw)
+	}
+	if r := invited.do("POST", "/api/v1/me/password",
+		map[string]any{"current_password": temp, "new_password": strings.Repeat("x", 73)}, nil); r.status != 422 {
+		t.Fatalf("73-byte password: %d %s", r.status, r.raw)
+	}
 	if r := invited.do("POST", "/api/v1/me/password",
 		map[string]any{"current_password": "wrong", "new_password": "long-enough-secret"}, nil); r.status != 401 {
 		t.Fatalf("wrong current: %d", r.status)
@@ -1689,6 +1697,9 @@ func TestPasswordInvite(t *testing.T) {
 	if r := e.anon().do("POST", "/api/v1/auth/password-login",
 		map[string]any{"email": "invited@cargodesk.example", "password": temp}, nil); r.status != 401 {
 		t.Fatalf("old password still accepted: %d", r.status)
+	}
+	if r := invited.do("GET", "/api/v1/shipments", nil, nil); r.status != 200 {
+		t.Fatalf("shipments after password change: %d", r.status)
 	}
 	relogged := e.anon().do("POST", "/api/v1/auth/password-login",
 		map[string]any{"email": "invited@cargodesk.example", "password": "long-enough-secret"}, nil)
@@ -1761,5 +1772,30 @@ func TestPublicTracking(t *testing.T) {
 	}
 	if r := e.anon().do("GET", "/api/v1/track/"+newToken, nil, nil); r.status != 200 {
 		t.Fatalf("rotated token does not resolve: %d", r.status)
+	}
+}
+
+func TestMemberHardening(t *testing.T) {
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	for _, bad := range []string{"@", "a@@b", "no-at.example", "Name <x@y.example>"} {
+		if r := admin.do("POST", "/api/v1/users", map[string]any{"email": bad, "display_name": "X", "role": "viewer"}, nil); r.status != 422 {
+			t.Fatalf("email %q: %d", bad, r.status)
+		}
+	}
+	// A member referenced by shipments/events cannot be deleted; demote instead.
+	if r := admin.do("DELETE", "/api/v1/users/"+seed.CoordinatorA, nil, nil); r.status != 409 || r.body["error"] != "user_has_history" {
+		t.Fatalf("delete with history: %d %s", r.status, r.raw)
+	}
+	// Renaming does not rewrite the role.
+	u := admin.mustOK(200, "PATCH", "/api/v1/users/"+seed.ViewerA, map[string]any{"display_name": "Dario Renamed"})
+	if got := u["user"].(map[string]any)["role"]; got != "viewer" {
+		t.Fatalf("role after rename = %v", got)
+	}
+	// Viewers see whether Slack is configured, never the webhook URL.
+	admin.mustOK(200, "PUT", "/api/v1/settings/slack", map[string]any{"url": "https://hooks.slack.example/services/T/B/x"})
+	r := e.login(seed.ViewerA).do("GET", "/api/v1/settings/slack", nil, nil)
+	if r.status != 200 || r.body["url"] != nil || r.body["configured"] != true {
+		t.Fatalf("viewer slack view: %d %s", r.status, r.raw)
 	}
 }

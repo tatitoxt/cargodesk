@@ -27,7 +27,7 @@ export default defineConfig({
     {
       command: `${bin} serve`,
       url: "http://localhost:8080/healthz",
-      env: { DEMO_AUTH: "true", ADDR: ":8080", DATABASE_URL: process.env.DATABASE_URL ?? "" },
+      env: { DEMO_AUTH: "true", SIGNUP_ENABLED: "true", ADDR: ":8080", DATABASE_URL: process.env.DATABASE_URL ?? "" },
       reuseExistingServer: !process.env.CI,
       stdout: "ignore",
     },

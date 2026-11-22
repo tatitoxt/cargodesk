@@ -20,6 +20,7 @@ export interface UserRef { id: string; display_name: string }
 export interface Me {
   id: string; email: string; display_name: string; role: Role;
   organization: { id: string; slug: string; name: string; timezone: string };
+  must_change_password?: boolean;
 }
 export interface DemoUser { id: string; email: string; display_name: string; role: Role; organization_name: string }
 export interface User { id: string; email: string; display_name: string; role: Role }

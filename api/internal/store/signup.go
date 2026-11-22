@@ -42,6 +42,7 @@ func (s *Store) Signup(ctx context.Context, in SignupInput) (userID string, err 
 	in.Prefix = strings.ToUpper(strings.TrimSpace(in.Prefix))
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
 	in.AdminName = strings.TrimSpace(in.AdminName)
+	in.Timezone = strings.TrimSpace(in.Timezone)
 
 	var fields []domain.FieldError
 	if !orgSlugRe.MatchString(in.Slug) {
@@ -50,20 +51,20 @@ func (s *Store) Signup(ctx context.Context, in SignupInput) (userID string, err 
 	if in.Name == "" || len([]rune(in.Name)) > 120 {
 		fields = append(fields, domain.FieldError{Field: "name", Message: "is required (max 120 characters)"})
 	}
-	if _, tzErr := time.LoadLocation(in.Timezone); tzErr != nil {
+	if _, tzErr := time.LoadLocation(in.Timezone); tzErr != nil || in.Timezone == "" || in.Timezone == "Local" {
 		fields = append(fields, domain.FieldError{Field: "timezone", Message: "must be a valid IANA timezone (e.g. America/Argentina/Buenos_Aires)"})
 	}
 	if !refPrefixRe.MatchString(in.Prefix) {
 		fields = append(fields, domain.FieldError{Field: "reference_prefix", Message: "must be 2-4 uppercase letters (e.g. CD)"})
 	}
-	if !strings.Contains(in.Email, "@") || len(in.Email) > 254 {
+	if !validEmail(in.Email) {
 		fields = append(fields, domain.FieldError{Field: "email", Message: "must be a valid email address"})
 	}
 	if in.AdminName == "" || len([]rune(in.AdminName)) > 120 {
 		fields = append(fields, domain.FieldError{Field: "display_name", Message: "is required (max 120 characters)"})
 	}
-	if len(in.Password) < minPasswordLen {
-		fields = append(fields, domain.FieldError{Field: "password", Message: "must be at least 10 characters"})
+	if msg := passwordProblem(in.Password); msg != "" {
+		fields = append(fields, domain.FieldError{Field: "password", Message: msg})
 	}
 	if len(fields) > 0 {
 		return "", &domain.ValidationError{Fields: fields}
@@ -101,8 +102,8 @@ func (s *Store) Signup(ctx context.Context, in SignupInput) (userID string, err 
 	}
 
 	err = tx.QueryRow(ctx,
-		`INSERT INTO users (organization_id, email, display_name, role, password_hash, must_change_password)
-		 VALUES ($1,$2,$3,$4,$5,false) RETURNING id`,
+		`INSERT INTO users (organization_id, email, display_name, role, password_hash, must_change_password, self_registered)
+		 VALUES ($1,$2,$3,$4,$5,false,true) RETURNING id`,
 		orgID, in.Email, in.AdminName, string(domain.Admin), hash).Scan(&userID)
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return "", ErrEmailTaken

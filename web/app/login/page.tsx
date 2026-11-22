@@ -2,19 +2,11 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { safeNext } from "@/lib/safe-next";
 import { api, type DemoUser, type Me } from "@/lib/api";
 import { ErrorBox } from "@/components/FieldErrors";
 
 // Only same-origin paths are allowed as post-login redirects.
-function safeNext(next: string | null): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return "/";
-  try {
-    const u = new URL(next, window.location.origin);
-    return u.origin === window.location.origin ? u.pathname + u.search + u.hash : "/";
-  } catch {
-    return "/";
-  }
-}
 
 function Login() {
   const [users, setUsers] = useState<DemoUser[]>([]);

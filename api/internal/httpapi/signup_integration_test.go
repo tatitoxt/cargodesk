@@ -100,3 +100,16 @@ func TestSignupRateLimit(t *testing.T) {
 		t.Fatalf("expected some 429s after limit, got %v", statuses)
 	}
 }
+
+func TestSignupRejectsEmptyTimezoneAndLongPassword(t *testing.T) {
+	e := newEnv(t, true)
+	for _, over := range []map[string]string{
+		{"timezone": ""},
+		{"password": strings.Repeat("p", 73)},
+		{"email": "a@@b"},
+	} {
+		if r := e.anon().do("POST", "/api/v1/signup", signupBody(over), nil); r.status != 422 {
+			t.Fatalf("signup %v: %d %s", over, r.status, r.raw)
+		}
+	}
+}

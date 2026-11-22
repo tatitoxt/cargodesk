@@ -20,12 +20,16 @@ import (
 // oidc.go: sign-in with an OIDC ID token (Authorization Code + PKCE on the
 // SPA side). The server verifies the token against the issuer's JWKS —
 // signature, iss, aud and exp — then maps the email claim to a seeded user
-// and issues the same session cookie as the demo login.
+// and issues the same session cookie as the demo login. The SPA has no OIDC
+// button yet; a client must obtain the ID token itself.
 // Enabled when OIDCIssuer and OIDCClientID are configured; the endpoint 404s
 // otherwise, and users must still exist (admin provisioning keeps control of
 // organization membership and roles).
 
-const jwksTTL = time.Hour
+const (
+	jwksTTL        = time.Hour
+	jwksMinRefresh = time.Minute
+)
 
 type OIDCVerifier struct {
 	issuer, clientID string
@@ -46,12 +50,13 @@ func NewOIDCVerifier(issuer, clientID string) *OIDCVerifier {
 }
 
 type idTokenClaims struct {
-	Iss   string `json:"iss"`
-	Aud   any    `json:"aud"` // string or []string
-	Sub   string `json:"sub"`
-	Exp   int64  `json:"exp"`
-	Iat   int64  `json:"iat"`
-	Email string `json:"email"`
+	Iss           string `json:"iss"`
+	Aud           any    `json:"aud"` // string or []string
+	Sub           string `json:"sub"`
+	Exp           int64  `json:"exp"`
+	Iat           int64  `json:"iat"`
+	Email         string `json:"email"`
+	EmailVerified any    `json:"email_verified"` // bool, or "true" for some issuers
 }
 
 func (v *OIDCVerifier) email(ctx context.Context, idToken string, now time.Time) (string, error) {
@@ -71,7 +76,7 @@ func (v *OIDCVerifier) email(ctx context.Context, idToken string, now time.Time)
 		return "", errors.New("malformed claims")
 	}
 
-	key, err := v.key(ctx, header.Kid, false)
+	key, err := v.key(ctx, header.Kid)
 	if err != nil {
 		return "", err
 	}
@@ -91,31 +96,31 @@ func (v *OIDCVerifier) email(ctx context.Context, idToken string, now time.Time)
 	if claims.Email == "" {
 		return "", errors.New("token has no email claim")
 	}
+	if v, ok := claims.EmailVerified.(bool); !ok || !v {
+		if sv, _ := claims.EmailVerified.(string); sv != "true" {
+			return "", errors.New("email is not verified by the issuer")
+		}
+	}
 	return claims.Email, nil
 }
 
-// key returns the RSA key for kid, refreshing the JWKS once when unknown.
-func (v *OIDCVerifier) key(ctx context.Context, kid string, refreshed bool) (*rsa.PublicKey, error) {
+// key returns the RSA key for kid. The JWKS is refetched when the cache is
+// older than jwksTTL, or when kid is unknown and the last fetch is older than
+// jwksMinRefresh, so unknown key ids cannot force a fetch per request.
+func (v *OIDCVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	v.mu.Lock()
-	stale := nowIsZero(v.fetchedAt) || time.Since(v.fetchedAt) > jwksTTL
-	if stale || v.keys[kid] == nil {
+	defer v.mu.Unlock()
+	age := time.Since(v.fetchedAt)
+	if v.fetchedAt.IsZero() || age > jwksTTL || (v.keys[kid] == nil && age > jwksMinRefresh) {
 		if err := v.fetchJWKS(ctx); err != nil {
-			v.mu.Unlock()
 			return nil, err
 		}
 	}
-	key := v.keys[kid]
-	v.mu.Unlock()
-	if key == nil && !refreshed {
-		return v.key(ctx, kid, true)
+	if key := v.keys[kid]; key != nil {
+		return key, nil
 	}
-	if key == nil {
-		return nil, errors.New("unknown key id")
-	}
-	return key, nil
+	return nil, errors.New("unknown key id")
 }
-
-func nowIsZero(t time.Time) bool { return t.IsZero() }
 
 func (v *OIDCVerifier) fetchJWKS(ctx context.Context) error {
 	var cfg struct {
