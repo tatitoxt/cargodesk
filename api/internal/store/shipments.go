@@ -186,8 +186,12 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 	var url *string
 	var events []string
 	var emails []string
-	var slackURL *string
-	if err := q.QueryRow(ctx, `SELECT webhook_url, webhook_events, notification_emails, slack_webhook_url FROM organizations WHERE id = $1`, a.Org.ID).Scan(&url, &events, &emails, &slackURL); err != nil {
+	var slackURL, waPNID, waAPI *string
+	var waRcpt []string
+	if err := q.QueryRow(ctx, `SELECT webhook_url, webhook_events, notification_emails, slack_webhook_url,
+		whatsapp_phone_number_id, whatsapp_recipients, whatsapp_api_url
+		FROM organizations WHERE id = $1`, a.Org.ID).
+		Scan(&url, &events, &emails, &slackURL, &waPNID, &waRcpt, &waAPI); err != nil {
 		return 0, err
 	}
 	subscribed := len(events) == 0
@@ -230,6 +234,25 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
 			(organization_id, event_id, action, channel, url, payload) VALUES ($1, $2, $3, 'slack', $4, $5)`,
 			a.Org.ID, id, e.Action, *slackURL, payload); err != nil {
+			return 0, err
+		}
+	}
+	if waPNID != nil && *waPNID != "" && len(waRcpt) > 0 && subscribed {
+		// WhatsApp Cloud API: POST {api}/{phone_number_id}/messages per
+		// recipient. Endpoint and message text are frozen here; the token is
+		// read live at dispatch so rotation applies to queued rows.
+		base := WhatsAppDefaultAPI
+		if waAPI != nil && *waAPI != "" {
+			base = strings.TrimRight(*waAPI, "/")
+		}
+		endpoint := fmt.Sprintf("%s/%s/messages", base, *waPNID)
+		payload, err := json.Marshal(map[string]any{"text": slackText(a, e)})
+		if err != nil {
+			return 0, err
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
+			(organization_id, event_id, action, channel, url, rcpt, payload) VALUES ($1, $2, $3, 'whatsapp', $4, $5, $6)`,
+			a.Org.ID, id, e.Action, endpoint, waRcpt, payload); err != nil {
 			return 0, err
 		}
 	}

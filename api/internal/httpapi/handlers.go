@@ -864,6 +864,95 @@ func (s *Server) handleDeleteSlack(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+var e164Re = regexp.MustCompile(`^\+?[0-9]{7,15}$`)
+
+func (s *Server) handleGetWhatsApp(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	cfg, err := s.cfg.Store.WhatsApp(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"phone_number_id": cfg.PhoneNumberID,
+		"recipients":      cfg.Recipients,
+		"api_url":         cfg.APIURL,
+		"token_set":       cfg.TokenSet,
+	})
+}
+
+func (s *Server) handlePutWhatsApp(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the WhatsApp channel", nil)
+		return
+	}
+	var in struct {
+		PhoneNumberID string   `json:"phone_number_id"`
+		Token         string   `json:"token"`
+		Recipients    []string `json:"recipients"`
+		APIURL        string   `json:"api_url"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.PhoneNumberID = strings.TrimSpace(in.PhoneNumberID)
+	if in.PhoneNumberID == "" || len(in.Recipients) == 0 {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"phone_number_id and at least one recipient are required (delete to disable)",
+			map[string]any{"phone_number_id": "required"})
+		return
+	}
+	if !e164Re.MatchString(in.PhoneNumberID) {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+			"phone_number_id must be the numeric id from the WhatsApp Business app", map[string]any{"phone_number_id": "invalid"})
+		return
+	}
+	for _, rcpt := range in.Recipients {
+		if !e164Re.MatchString(rcpt) {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+				"recipients must be E.164 numbers like +5491122334455", map[string]any{"recipients": "invalid"})
+			return
+		}
+	}
+	if in.APIURL != "" {
+		u, err := url.Parse(in.APIURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+				"api_url must be a full https URL", map[string]any{"api_url": "https_required"})
+			return
+		}
+	}
+	if err := s.cfg.Store.SetWhatsApp(r.Context(), a, in.PhoneNumberID, in.APIURL, in.Recipients, in.Token); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	cfg, err := s.cfg.Store.WhatsApp(r.Context(), a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"phone_number_id": cfg.PhoneNumberID,
+		"recipients":      cfg.Recipients,
+		"api_url":         cfg.APIURL,
+		"token_set":       cfg.TokenSet,
+	})
+}
+
+func (s *Server) handleDeleteWhatsApp(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can change the WhatsApp channel", nil)
+		return
+	}
+	if err := s.cfg.Store.ClearWhatsApp(r.Context(), a); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // --- member management (admins) ---
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {

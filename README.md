@@ -67,6 +67,14 @@ explains how it got there.
     (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM`/`SMTP_TLS`
     deployment env, plain or implicit TLS). `GET` reports `smtp_enabled`
     and the email delivery log.
+  - **WhatsApp channel** (Meta Cloud API): `PUT /api/v1/settings/whatsapp`
+    with `{"phone_number_id", "token", "recipients": ["+549…"]}` posts one
+    `{"messaging_product":"whatsapp","to":…,"type":"text"}` call per recipient
+    through the same outbox (`channel='whatsapp'`). The endpoint URL and
+    rendered text are frozen at enqueue; the access token is read live so
+    rotating it applies to already-queued deliveries. `api_url` overrides the
+    Graph API base for gateways/tests; `GET` returns the config with the token
+    masked; `DELETE` clears everything including the token.
 - **Auditable timeline**: every change writes an append-only event (actor,
   action, from/to state, reason, change data, timestamp, correlation ID) in the same
   transaction as the change. PostgreSQL triggers reject `UPDATE`/`DELETE`/`TRUNCATE` on events.
@@ -285,17 +293,17 @@ No external API keys are used or required.
 - One currency per quote and no pricing logic; quotes are entered manually.
 - Delivery "evidence" is a text record (received by, time, note); photo/POD
   evidence is a generic attachment rather than a dedicated field.
-- Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks
-  and email (SMTP); no WhatsApp, maps/GPS, or customer portal.
+- Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks,
+  email (SMTP) and WhatsApp (Meta Cloud API); no maps/GPS or customer portal.
 - Sign-up is open to anyone who reaches the API (per-IP rate limited); a real
   deployment would gate it behind a billing or invite flow.
 - No load testing or security audit has been performed.
 
 ## Roadmap
 
-1. WhatsApp channel for the existing notification pipeline (Slack already
-   ships: `PUT /api/v1/settings/slack` with an incoming-webhook URL posts
-   `{"text": ...}` messages through the same signed, retried outbox).
+1. Template-based WhatsApp messages (the Cloud API text type ships today;
+   pre-approved templates are needed for outside-window delivery).
+2. Load testing at realistic volume and a security audit.
 
 ## License
 

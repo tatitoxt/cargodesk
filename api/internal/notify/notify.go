@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -71,9 +72,12 @@ func (d *Dispatcher) flush(ctx context.Context) {
 	}
 	for _, del := range ds {
 		var err error
-		if del.Channel == "email" {
+		switch del.Channel {
+		case "email":
 			err = d.mail(ctx, del)
-		} else {
+		case "whatsapp":
+			err = d.whatsapp(ctx, del)
+		default:
 			err = d.post(ctx, del)
 		}
 		if err != nil {
@@ -84,6 +88,68 @@ func (d *Dispatcher) flush(ctx context.Context) {
 			continue
 		}
 	}
+}
+
+// whatsapp posts a Cloud API message to each recipient. The payload holds the
+// rendered {"text": ...} frozen at enqueue; the access token is read live so
+// rotating it takes effect for already-queued deliveries. Every recipient must
+// succeed before the row is marked delivered.
+func (d *Dispatcher) whatsapp(ctx context.Context, del store.Delivery) error {
+	token, err := d.whatsappToken(ctx, del)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return fmt.Errorf("whatsapp channel not configured (no access token)")
+	}
+	var msg struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(del.Payload, &msg); err != nil || msg.Text == "" {
+		return fmt.Errorf("invalid whatsapp payload: %w", err)
+	}
+	lastCode := 0
+	for _, rcpt := range del.Rcpt {
+		body, err := json.Marshal(map[string]any{
+			"messaging_product": "whatsapp",
+			"to":                rcpt,
+			"type":              "text",
+			"text":              map[string]any{"body": msg.Text},
+		})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, del.URL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("User-Agent", "cargodesk-webhook/1.0")
+		resp, err := d.Client.Do(req)
+		if err != nil {
+			return err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("whatsapp api returned %d for %s", resp.StatusCode, rcpt)
+		}
+		lastCode = resp.StatusCode
+	}
+	return d.Store.MarkDelivered(ctx, del.ID, lastCode)
+}
+
+// whatsappToken reads the org's live WhatsApp access token.
+func (d *Dispatcher) whatsappToken(ctx context.Context, del store.Delivery) (string, error) {
+	var tok *string
+	err := d.Store.Pool().QueryRow(ctx,
+		`SELECT o.whatsapp_token FROM organizations o
+		 JOIN notification_deliveries n ON n.organization_id = o.id WHERE n.id = $1`, del.ID).Scan(&tok)
+	if err != nil || tok == nil {
+		return "", err
+	}
+	return *tok, nil
 }
 
 // mail sends an email delivery through the configured Mailer and marks it

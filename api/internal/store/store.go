@@ -152,6 +152,73 @@ func (s *Store) Slack(ctx context.Context, a Actor) (string, error) {
 	return *u, err
 }
 
+// WhatsAppCfg holds the org's WhatsApp Cloud API settings. The token is never
+// returned here — deliveries read it live so rotation applies to queued rows.
+type WhatsAppCfg struct {
+	PhoneNumberID string
+	Recipients    []string
+	APIURL        string
+	TokenSet      bool
+}
+
+// WhatsAppDefaultAPI is Meta's Graph API base used when api_url is unset.
+const WhatsAppDefaultAPI = "https://graph.facebook.com/v21.0"
+
+// SetWhatsApp replaces the org's WhatsApp channel config. A blank
+// PhoneNumberID or empty Recipients disables the channel. apiURL/token may be
+// empty (token empty keeps the stored one; use ClearWhatsApp to remove it).
+func (s *Store) SetWhatsApp(ctx context.Context, a Actor, phoneNumberID, apiURL string, recipients []string, token string) error {
+	var tok *string
+	if token != "" {
+		tok = &token
+	}
+	var api *string
+	if apiURL != "" {
+		api = &apiURL
+	}
+	var rcpt *[]string
+	if len(recipients) > 0 {
+		rcpt = &recipients
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET
+		whatsapp_phone_number_id = $2,
+		whatsapp_recipients = $3,
+		whatsapp_api_url = $4,
+		whatsapp_token = COALESCE($5, whatsapp_token)
+		WHERE id = $1`, a.Org.ID, phoneNumberID, rcpt, api, tok)
+	return err
+}
+
+// ClearWhatsApp removes the whole WhatsApp config including the token.
+func (s *Store) ClearWhatsApp(ctx context.Context, a Actor) error {
+	_, err := s.pool.Exec(ctx, `UPDATE organizations SET
+		whatsapp_phone_number_id = NULL, whatsapp_recipients = NULL,
+		whatsapp_api_url = NULL, whatsapp_token = NULL WHERE id = $1`, a.Org.ID)
+	return err
+}
+
+// WhatsApp returns the org's WhatsApp config (never the token itself).
+func (s *Store) WhatsApp(ctx context.Context, a Actor) (WhatsAppCfg, error) {
+	var cfg WhatsAppCfg
+	var pnid, api, tok *string
+	var rcpt []string
+	err := s.pool.QueryRow(ctx, `SELECT whatsapp_phone_number_id, whatsapp_recipients,
+		whatsapp_api_url, whatsapp_token FROM organizations WHERE id = $1`, a.Org.ID).
+		Scan(&pnid, &rcpt, &api, &tok)
+	if err != nil {
+		return cfg, err
+	}
+	if pnid != nil {
+		cfg.PhoneNumberID = *pnid
+	}
+	cfg.Recipients = rcpt
+	if api != nil {
+		cfg.APIURL = *api
+	}
+	cfg.TokenSet = tok != nil && *tok != ""
+	return cfg, nil
+}
+
 // SetEmailRecipients replaces the org's notification email list; an empty
 // list disables the email channel.
 func (s *Store) SetEmailRecipients(ctx context.Context, a Actor, emails []string) error {

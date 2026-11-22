@@ -1514,6 +1514,122 @@ func TestSlackNotifications(t *testing.T) {
 	}
 }
 
+func TestWhatsAppChannel(t *testing.T) {
+	// Fake Meta Graph API endpoint: records auth header + body per call.
+	var mu sync.Mutex
+	var got []struct {
+		auth string
+		body map[string]any
+	}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		m := map[string]any{}
+		_ = json.Unmarshal(b, &m)
+		mu.Lock()
+		got = append(got, struct {
+			auth string
+			body map[string]any
+		}{r.Header.Get("Authorization"), m})
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(receiver.Close)
+
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	coord := e.login(seed.CoordinatorA)
+	viewer := e.login(seed.ViewerA)
+
+	// RBAC + validation.
+	if r := viewer.do("PUT", "/api/v1/settings/whatsapp", map[string]any{
+		"phone_number_id": "123456789", "recipients": []string{"+5491100000000"}, "token": "tok"}, nil); r.status != 403 {
+		t.Fatalf("viewer PUT whatsapp: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/whatsapp", map[string]any{
+		"phone_number_id": "123456789", "recipients": []string{"not-a-number"}, "token": "tok"}, nil); r.status != 422 {
+		t.Fatalf("bad recipient: %d", r.status)
+	}
+	if r := admin.do("PUT", "/api/v1/settings/whatsapp", map[string]any{
+		"phone_number_id": "123456789", "recipients": []string{"+5491100000000"},
+		"token": "tok", "api_url": "http://insecure.local"}, nil); r.status != 422 {
+		t.Fatalf("http api_url: %d", r.status)
+	}
+
+	// Configure via the store so api_url can point at the local http sink.
+	st := store.New(e.pool)
+	actor, err := st.ActorByUserID(t.Context(), seed.AdminA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWhatsApp(t.Context(), actor, "555123456", receiver.URL,
+		[]string{"+5491122334455", "+5491166778899"}, "wa-test-token"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := st.WhatsApp(t.Context(), actor)
+	if err != nil || !cfg.TokenSet || cfg.PhoneNumberID != "555123456" || len(cfg.Recipients) != 2 {
+		t.Fatalf("whatsapp cfg %+v err %v", cfg, err)
+	}
+
+	// A shipment event enqueues a whatsapp delivery at {api}/{pnid}/messages.
+	coord.mustOK(201, "POST", "/api/v1/shipments", createBody("WhatsApp Account"))
+	var channel, endpoint string
+	var rcpt []string
+	if err := e.pool.QueryRow(t.Context(),
+		`SELECT channel, url, rcpt FROM notification_deliveries ORDER BY id DESC LIMIT 1`).
+		Scan(&channel, &endpoint, &rcpt); err != nil {
+		t.Fatal(err)
+	}
+	if channel != "whatsapp" || endpoint != receiver.URL+"/555123456/messages" || len(rcpt) != 2 {
+		t.Fatalf("delivery channel=%s url=%s rcpt=%v", channel, endpoint, rcpt)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	d := &notify.Dispatcher{Store: st, Interval: 20 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	go d.Run(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("whatsapp calls: %d, want one per recipient", len(got))
+	}
+	toSet := map[string]bool{}
+	for _, call := range got {
+		if call.auth != "Bearer wa-test-token" {
+			t.Fatalf("auth header: %q", call.auth)
+		}
+		if call.body["messaging_product"] != "whatsapp" || call.body["type"] != "text" {
+			t.Fatalf("body: %v", call.body)
+		}
+		text, _ := call.body["text"].(map[string]any)["body"].(string)
+		if !strings.Contains(text, "demo-freight") || !strings.Contains(text, "created") {
+			t.Fatalf("text body: %v", call.body)
+		}
+		toSet[call.body["to"].(string)] = true
+	}
+	if !toSet["+5491122334455"] || !toSet["+5491166778899"] {
+		t.Fatalf("recipients: %v", toSet)
+	}
+
+	// DELETE wipes the whole config including the token.
+	admin.mustOK(204, "DELETE", "/api/v1/settings/whatsapp", nil)
+	cfg, err = st.WhatsApp(t.Context(), actor)
+	if err != nil || cfg.TokenSet || cfg.PhoneNumberID != "" {
+		t.Fatalf("cleared cfg %+v err %v", cfg, err)
+	}
+}
+
 // Password invites: an admin invites a member, who signs in with the one-time
 // temporary password and is forced to replace it.
 func TestPasswordInvite(t *testing.T) {

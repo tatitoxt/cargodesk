@@ -110,6 +110,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/settings/slack", s.authed(s.handleGetSlack))
 	m.HandleFunc("PUT /api/v1/settings/slack", s.authed(s.handlePutSlack))
 	m.HandleFunc("DELETE /api/v1/settings/slack", s.authed(s.handleDeleteSlack))
+	m.HandleFunc("GET /api/v1/settings/whatsapp", s.authed(s.handleGetWhatsApp))
+	m.HandleFunc("PUT /api/v1/settings/whatsapp", s.authed(s.handlePutWhatsApp))
+	m.HandleFunc("DELETE /api/v1/settings/whatsapp", s.authed(s.handleDeleteWhatsApp))
 	m.HandleFunc("GET /api/v1/settings/email", s.authed(s.handleGetEmail))
 	m.HandleFunc("PUT /api/v1/settings/email", s.authed(s.handlePutEmail))
 }

@@ -44,6 +44,9 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | PUT | `/api/v1/settings/webhook` | admin | `{"url": "https://…", "secret": "…"}`. https only; `422` otherwise. |
 | DELETE | `/api/v1/settings/webhook` | admin | Disable notifications. |
 | POST | `/api/v1/settings/webhook/test` | admin | Queue a `webhook_test` ping delivery. |
+| GET | `/api/v1/settings/whatsapp` | any | WhatsApp config: `phone_number_id`, `recipients`, `api_url`, `token_set`. |
+| PUT | `/api/v1/settings/whatsapp` | admin | `{"phone_number_id": "…", "token": "…", "recipients": ["+549…"], "api_url": "https://…"}`. E.164 recipients; `api_url` must be https. `422` on invalid. |
+| DELETE | `/api/v1/settings/whatsapp` | admin | Clear the channel config including the stored token. |
 
 ### Outbound webhooks
 
