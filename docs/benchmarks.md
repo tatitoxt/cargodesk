@@ -8,37 +8,32 @@ optimistic locking and outbox writes the React app uses. Benchmarks live in
 **How to reproduce**
 
 ```sh
-CARGODESK_TEST_DATABASE_URL=postgres://cargodesk:cargodesk@host:55434/cargodesk \
+export CARGODESK_TEST_DATABASE_URL=postgres://cargodesk:cargodesk@localhost:5432/cargodesk_test?sslmode=disable
 go test -count=1 -p 1 -run '^$' -bench . -benchtime=100x ./api/internal/httpapi/
+go test -count=1 -p 1 -run '^$' -bench Concurrent -benchtime=400x ./api/internal/httpapi/
 ```
 
-**Results (2026-11-21, 100 iterations, local Postgres 17)**
+**Results (2026-11-22, 8-vCPU Intel Xeon cloud VM, PostgreSQL 17 in Docker on the same host)**
 
-| Metric | Value |
-|---|---:|
-| Full shipment lifecycle (create + quote → accept → schedule → transit → deliver) | **11.2 ms** per shipment |
-| Sustained lifecycle throughput | ~89 shipments/sec end-to-end |
-| Per-request writes inside the lifecycle | ~530 writes/sec (6 ops/shipment) |
-| Filtered board list (`?status=…&limit=50`) | 1.8 ms median (~560 req/sec) |
+`ns/op` from `go test -bench` is a mean over the iterations, not a median.
 
-**Concurrent load (2026-11-22, `-bench Concurrent -benchtime 400x`, 8-way parallelism)**
+| Benchmark | Mean per op | Derived rate |
+|---|---:|---:|
+| `BenchmarkShipmentLifecycle` (create + quote → accept → schedule → transit → deliver, 6 requests) | 18.6 ms | ~54 shipments/s sequential |
+| `BenchmarkListShipments` (board list over 50 shipments) | 2.5 ms | ~400 requests/s sequential |
+| `BenchmarkConcurrentLifecycle`, `-benchtime=400x`, `RunParallel` with GOMAXPROCS=8 | 2.8 ms | ~358 shipments/s (~2,150 requests/s) |
 
-| Metric | Value |
-|---|---:|
-| Full lifecycle under concurrency | 4.1 ms per shipment |
-| Aggregate lifecycle throughput | **~176 shipments/sec** end-to-end |
-| Aggregate HTTP ops | ~1,050 requests/sec (6 ops/shipment) |
-| Errors / optimistic-lock failures | **0** across 2,400 requests |
-
-`BenchmarkConcurrentLifecycle` gives each parallel worker its own session and
-runs the full create→deliver workflow; a failure counter records any
-unexpected status or version conflict, so a clean run proves correctness
-under concurrency, not just speed.
+The concurrent benchmark counts every unexpected status or version conflict
+in a `failures` metric; it reported 0 failures over 400 lifecycles
+(2,400 requests). That shows the happy path does not trip optimistic
+locking under parallel workers; it is not a substitute for the state-machine
+and integration tests.
 
 **Reading the numbers**
 
 - The lifecycle op is intentionally heavy: six HTTP requests, each doing its
   own auth, RBAC check, version-checked UPDATE, audit-event insert and
   (when webhooks are configured) a transactional outbox row.
-- Numbers are machine-dependent; they are a reproducible baseline, not a
-  marketing figure. Concurrency numbers used GOMAXPROCS=8 parallelism.
+- Numbers are machine-dependent and were taken on a shared VM with the
+  database on the same host; rerun the commands above on your hardware.
+  This is not a load test of a deployed system.

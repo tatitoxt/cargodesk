@@ -125,8 +125,9 @@ explains how it got there.
 - **Synthetic seed** built through the same store code paths, so seeded
   timelines are real events.
 
-Not in the MVP (by design): WhatsApp, maps/GPS, billing, customer portal,
-document storage, AI.
+The original MVP spec left notifications, sign-up and attachments out; they
+were added later and are described below. Still out of scope: maps/GPS,
+billing, customer portal, AI.
 
 ## Quickstart (Docker Compose demo)
 
@@ -240,8 +241,8 @@ E2E specs (`web/e2e/`):
 
 ### Measured results (this repository, reproducible with the commands above)
 
-- Go: 57 top-level tests and 92 subtests pass across 7 packages
-  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 149), including real-PostgreSQL
+- Go: 93 top-level tests and 92 subtests pass across 7 packages
+  (`go test -v ./... | grep -cE '^\s*--- PASS'` → 185), including real-PostgreSQL
   integration tests in `internal/store` and `internal/httpapi`.
 - Playwright: 11 E2E tests pass in Chromium.
 
@@ -263,12 +264,15 @@ request and push to `main`:
 | `DATABASE_URL` | api | – | PostgreSQL connection string. |
 | `ADDR` | api | `:8080` | Listen address. |
 | `DEMO_AUTH` | api | `false` | Enables the seeded demo-user sign-in. |
-| `OIDC_ISSUER` | api | | OIDC issuer URL (e.g. `https://accounts.google.com`); with `OIDC_CLIENT_ID` enables `POST /api/v1/auth/oidc` — verifies the ID token against the issuer JWKS (signature, iss, aud, exp), maps the email claim to a provisioned user, and issues the same session cookie. |
+| `OIDC_ISSUER` | api | | OIDC issuer URL (e.g. `https://accounts.google.com`); with `OIDC_CLIENT_ID` enables `POST /api/v1/auth/oidc` — verifies the ID token against the issuer JWKS (signature, iss, aud, exp), requires `email_verified`, maps the email to an admin-provisioned user, and issues the same session cookie. |
 | `OIDC_CLIENT_ID` | api | | Audience required in the ID token. |
 | `SECURE_COOKIE` | api | `false` | Sets `Secure` on the session cookie (use behind HTTPS). |
 | `ATTACHMENTS_DIR` | api | `data/attachments` | Blob storage root for shipment attachments; empty disables uploads. |
 | `MAX_ATTACHMENT_BYTES` | api | `10485760` | Per-file upload size cap in bytes. |
 | `RETENTION_INTERVAL` | api | `1h` | Attachment retention purge interval; `0` disables the background pass. |
+| `SIGNUP_ENABLED` | api | `false` | Exposes public `POST /api/v1/signup`. |
+| `TRUST_PROXY` | api | `false` | Uses the last `X-Forwarded-For` hop as the client IP for rate limits (set when the API is only reachable through the web proxy). |
+| `WHATSAPP_ALLOW_CUSTOM_API` | api | `false` | Allows a WhatsApp `api_url` host other than `graph.facebook.com`. |
 | `API_URL` | web (build time) | `http://localhost:8080` | Where the Next.js proxy forwards `/api/v1/*`. |
 | `CARGODESK_TEST_DATABASE_URL` | Go tests | – | Disposable database for integration tests. |
 
@@ -276,17 +280,17 @@ No external API keys are used or required.
 
 ## Limitations
 
-- **Authentication is provisioned.** With OIDC configured, the SPA runs the
-  Authorization Code + PKCE flow and posts the ID token to `/api/v1/auth/oidc`;
-  users must still be seeded/invited by an admin (organization and role are not
-  taken from the token). Admins can also invite a member with a one-time
-  temporary password (`POST /api/v1/users/invite`); the invitee signs in with
-  email + password (`POST /api/v1/auth/password-login`) and is forced through a
-  password change (`POST /api/v1/me/password`, bcrypt, 10+ chars) before using
-  the app. A third path is self-service sign-up: `POST /api/v1/signup`
-  provisions an organization plus its first admin (bcrypt password, default SLA
-  policy, session issued immediately) behind a per-IP sliding-window limiter —
-  UI at `/signup`. Without OIDC, sign-in is the seeded user picker. Do not expose
+- **Authentication is provisioned.** `POST /api/v1/auth/oidc` accepts an
+  ID token obtained by the client (the web UI has no OIDC button yet); the
+  token must carry `email_verified`, and it only maps to users an admin
+  provisioned (organization and role are not taken from the token).
+  Admins can also invite a member with a one-time temporary password
+  (`POST /api/v1/users/invite`); the invitee signs in with email + password
+  (`POST /api/v1/auth/password-login`, throttled per email and IP) and the API
+  refuses every other route until they change it (`POST /api/v1/me/password`,
+  bcrypt, 10–72 bytes). Self-service sign-up (`POST /api/v1/signup`, UI at
+  `/signup`) is off unless `SIGNUP_ENABLED=true` (the compose demo and E2E
+  enable it). Without OIDC, sign-in is the seeded user picker. Do not expose
   the demo to the internet.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
@@ -295,8 +299,11 @@ No external API keys are used or required.
   evidence is a generic attachment rather than a dedicated field.
 - Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks,
   email (SMTP) and WhatsApp (Meta Cloud API); no maps/GPS or customer portal.
-- Sign-up is open to anyone who reaches the API (per-IP rate limited); a real
-  deployment would gate it behind a billing or invite flow.
+- When enabled, sign-up is open to anyone who reaches the API (per-IP rate
+  limited) and does not verify the email address; a real deployment would
+  add email verification or gate it behind an invite flow.
+- Outbound webhook and Slack URLs are admin-chosen and are not filtered for
+  private network ranges; redirects are never followed.
 - No security audit has been performed.
 
 ## Roadmap
@@ -311,4 +318,8 @@ No external API keys are used or required.
 
 ## Benchmarks
 
-`go test -bench . ./api/internal/httpapi/` drives the real HTTP API against Postgres: full shipment lifecycle (create → deliver) at **11.2 ms/shipment** sequential, **~176 shipments/sec** under 8-way concurrency with **0 errors in 2,400 requests**, and filtered board lists at 1.8 ms. See [docs/benchmarks.md](docs/benchmarks.md).
+`go test -bench` drives the real HTTP API against PostgreSQL. On an 8-vCPU
+cloud VM (2026-11-22) a full shipment lifecycle (6 requests) averaged
+18.6 ms sequentially and 2.8 ms per shipment with 8 parallel workers, with 0
+failures over 2,400 requests. Machine-dependent; commands and caveats in
+[docs/benchmarks.md](docs/benchmarks.md).
