@@ -140,7 +140,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Correlation-ID", corr)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
-	r.Body = http.MaxBytesReader(sw, r.Body, MaxBodyBytes)
+	// Attachment uploads set their own, larger limit in the handler.
+	if !isAttachmentUpload(r) {
+		r.Body = http.MaxBytesReader(sw, r.Body, MaxBodyBytes)
+	}
 	defer func() {
 		if rec := recover(); rec != nil {
 			s.cfg.Logger.Error("panic", "correlation_id", corr, "panic", rec)
@@ -222,6 +225,11 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func isAttachmentUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/shipments/") &&
+		strings.HasSuffix(r.URL.Path, "/attachments")
 }
 
 // passwordChangeAllowed lists the routes a member on a temporary password may

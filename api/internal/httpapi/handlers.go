@@ -646,16 +646,15 @@ func (s *Server) handlePurgeRetention(w http.ResponseWriter, r *http.Request) {
 // across every org that configured a retention window. It is used by the
 // admin endpoint above and by the background retention loop in main.
 func (s *Server) PurgeExpiredAttachments(ctx context.Context) (int, error) {
+	// Rows from orgs that committed before a failure are already gone, so
+	// their blobs are removed even when err != nil.
 	purged, err := s.cfg.Store.PurgeExpiredAttachments(ctx, s.now())
-	if err != nil {
-		return 0, err
-	}
 	for _, p := range purged {
 		if path, perr := s.blobPath(p.StorageKey); perr == nil {
 			_ = os.Remove(path) // best-effort; metadata row is already gone
 		}
 	}
-	return len(purged), nil
+	return len(purged), err
 }
 
 var emailRE = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)

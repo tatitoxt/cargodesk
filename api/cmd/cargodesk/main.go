@@ -59,6 +59,14 @@ func main() {
 	}
 }
 
+// attachmentsDir honours an explicitly empty ATTACHMENTS_DIR (uploads off).
+func attachmentsDir() string {
+	if v, ok := os.LookupEnv("ATTACHMENTS_DIR"); ok {
+		return v
+	}
+	return "data/attachments"
+}
+
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -106,7 +114,7 @@ func serve(ctx context.Context, log *slog.Logger) error {
 			}
 		}
 		api := httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
-			AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc,
+			AttachmentsDir: attachmentsDir(), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc,
 			EmailEnabled: mailer != nil, SignupEnabled: env("SIGNUP_ENABLED", "false") == "true",
 			TrustProxy:             env("TRUST_PROXY", "false") == "true",
 			AllowCustomWhatsAppAPI: env("WHATSAPP_ALLOW_CUSTOM_API", "false") == "true"})

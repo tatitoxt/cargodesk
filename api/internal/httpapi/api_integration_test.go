@@ -817,6 +817,12 @@ func TestAttachments(t *testing.T) {
 	if att["sha256"] != hex.EncodeToString(sum[:]) || att["filename"] != "pod-1.pdf" {
 		t.Fatalf("bad metadata: %v", att)
 	}
+	// Uploads are bounded by the attachment limit, not the 64 KiB JSON limit.
+	if big := upload(coord, "scan.pdf", "application/pdf", bytes.Repeat([]byte("p"), 200<<10)); big.status != 201 {
+		t.Fatalf("200 KiB upload: %d %s", big.status, big.raw)
+	} else {
+		coord.mustOK(204, "DELETE", "/api/v1/shipments/"+id+"/attachments/"+big.body["id"].(string), nil)
+	}
 
 	// Viewers can list and download but not upload or delete.
 	if r := upload(viewer, "x.txt", "text/plain", []byte("x")); r.status != 403 {

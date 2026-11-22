@@ -293,3 +293,28 @@ func TestCalendarValidateWindows(t *testing.T) {
 		}
 	}
 }
+
+func TestDueAtBusinessEdgeCases(t *testing.T) {
+	utc := time.UTC
+	weekdays := Calendar{Days: []int{1, 2, 3, 4, 5}, StartMinute: 9 * 60, EndMinute: 18 * 60}
+	// Partial minutes are kept: 10:00:30 + 1h = 11:00:30, not 11:00:00.
+	start := time.Date(2026, 3, 2, 10, 0, 30, 0, utc) // Monday
+	if got := DueAtBusiness(start, 1, weekdays, utc); !got.Equal(start.Add(time.Hour)) {
+		t.Fatalf("partial minute: %v", got)
+	}
+	// A 720 h allowance over a one-hour window still resolves.
+	narrow := Calendar{Days: []int{1, 2, 3, 4, 5}, StartMinute: 9 * 60, EndMinute: 10 * 60}
+	if got := DueAtBusiness(start, 720, narrow, utc); !got.After(start.AddDate(2, 0, 0)) {
+		t.Fatalf("long allowance returned %v", got)
+	}
+	// Across the US spring-forward, the window still opens at 09:00 local.
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skip("tzdata unavailable")
+	}
+	fri := time.Date(2026, 3, 6, 17, 0, 0, 0, ny) // Friday before DST starts (Sun 8 Mar)
+	got := DueAtBusiness(fri, 2, weekdays, ny).In(ny)
+	if want := time.Date(2026, 3, 9, 10, 0, 0, 0, ny); !got.Equal(want) {
+		t.Fatalf("DST: got %v want %v", got, want)
+	}
+}

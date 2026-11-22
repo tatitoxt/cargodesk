@@ -199,17 +199,40 @@ func (s *Store) PurgeExpiredAttachments(ctx context.Context, now time.Time) ([]P
 		if err != nil {
 			continue
 		}
-		tx, err := s.pool.Begin(ctx)
+		purged, err := s.purgeOrg(ctx, orgID, userID, byOrg[orgID], now)
 		if err != nil {
 			return out, err
 		}
+		out = append(out, purged...)
+	}
+	return out, nil
+}
+
+// purgeOrg deletes one org's candidates in a transaction that locks the org
+// row and re-checks the current retention window, so a policy changed after
+// candidate selection still protects the files. It returns only the rows it
+// actually deleted.
+func (s *Store) purgeOrg(ctx context.Context, orgID, userID string, cands []PurgedAttachment, now time.Time) ([]PurgedAttachment, error) {
+	var out []PurgedAttachment
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		out = nil
 		actor := Actor{UserID: userID, Org: Org{ID: orgID}}
-		for _, p := range byOrg[orgID] {
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM attachments WHERE id = $1 AND organization_id = $2`,
-				p.AttachmentID, orgID); err != nil {
-				_ = tx.Rollback(ctx)
-				return out, err
+		var days int
+		if err := tx.QueryRow(ctx, `SELECT slug, attachment_retention_days FROM organizations WHERE id = $1 FOR UPDATE`,
+			orgID).Scan(&actor.Org.Slug, &days); err != nil {
+			return err
+		}
+		if days <= 0 {
+			return nil
+		}
+		for _, p := range cands {
+			tag, err := tx.Exec(ctx, `DELETE FROM attachments WHERE id = $1 AND organization_id = $2
+				AND created_at < $3::timestamptz - make_interval(days => $4)`, p.AttachmentID, orgID, now, days)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 {
+				continue
 			}
 			if _, err := insertEvent(ctx, tx, actor, EventRecord{
 				ShipmentID: p.ShipmentID, Action: "attachment_removed",
@@ -219,14 +242,14 @@ func (s *Store) PurgeExpiredAttachments(ctx context.Context, now time.Time) ([]P
 					"reason": "retention",
 				},
 			}); err != nil {
-				_ = tx.Rollback(ctx)
-				return out, err
+				return err
 			}
+			out = append(out, p)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return out, err
-		}
-		out = append(out, byOrg[orgID]...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

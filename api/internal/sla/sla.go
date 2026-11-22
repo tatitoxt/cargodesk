@@ -280,28 +280,31 @@ func contains(xs []int, v int) bool {
 // non-holiday days, evaluated in loc. createdAt instant is preserved (no
 // rounding); the result is UTC.
 func DueAtBusiness(createdAt time.Time, hours int, c Calendar, loc *time.Location) time.Time {
-	remaining := hours * 60
+	remaining := time.Duration(hours) * time.Hour
 	cur := createdAt.In(loc)
-	// Each iteration skips at least one calendar day or consumes a full window.
-	for i := 0; i < 4*366; i++ {
-		dayStart := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, loc)
+	// Each iteration skips one calendar day or consumes the rest of a window;
+	// the bound covers a 720 h allowance over the narrowest valid window.
+	for i := 0; i < 200_000; i++ {
+		y, m, d := cur.Date()
+		next := time.Date(y, m, d+1, 0, 0, 0, 0, loc)
 		if !c.working(cur) {
-			cur = dayStart.AddDate(0, 0, 1)
+			cur = next
 			continue
 		}
 		startMin, endMin, _ := c.window(cur)
-		winStart := dayStart.Add(time.Duration(startMin) * time.Minute)
-		winEnd := dayStart.Add(time.Duration(endMin) * time.Minute)
+		// Build wall-clock times directly so DST transitions keep 09:00 at 09:00.
+		winStart := time.Date(y, m, d, startMin/60, startMin%60, 0, 0, loc)
+		winEnd := time.Date(y, m, d, endMin/60, endMin%60, 0, 0, loc)
 		if !cur.Before(winEnd) {
-			cur = dayStart.AddDate(0, 0, 1)
+			cur = next
 			continue
 		}
 		if cur.Before(winStart) {
 			cur = winStart
 		}
-		left := int(winEnd.Sub(cur).Minutes())
+		left := winEnd.Sub(cur)
 		if left >= remaining {
-			return cur.Add(time.Duration(remaining) * time.Minute).UTC()
+			return cur.Add(remaining).UTC()
 		}
 		remaining -= left
 		cur = winEnd

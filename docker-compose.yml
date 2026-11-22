@@ -32,6 +32,9 @@ services:
       SIGNUP_ENABLED: "true"
       TRUST_PROXY: "true"
       ADDR: ":8080"
+      ATTACHMENTS_DIR: /data/attachments
+    volumes:
+      - attachments:/data/attachments
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -55,3 +58,4 @@ services:
 
 volumes:
   db-data:
+  attachments:

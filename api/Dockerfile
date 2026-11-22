@@ -6,7 +6,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/cargodesk ./cmd/cargodesk
 
 FROM alpine:3.22
-RUN apk add --no-cache tzdata ca-certificates && adduser -D -u 10001 app
+RUN apk add --no-cache tzdata ca-certificates && adduser -D -u 10001 app \
+    && mkdir -p /data/attachments && chown app:app /data/attachments
+ENV ATTACHMENTS_DIR=/data/attachments
 COPY --from=build /out/cargodesk /usr/local/bin/cargodesk
 USER app
 EXPOSE 8080
