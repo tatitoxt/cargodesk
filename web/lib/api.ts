@@ -29,7 +29,7 @@ export interface Shipment {
   cargo_type: string; required_date: string; notes: string; state: State; priority: Priority; owner: UserRef | null;
   next_action_at: string | null; next_action_note: string; due_at: string; quoted_at: string | null;
   pickup_at: string | null; carrier: string | null; delivered_at: string | null; received_by: string | null;
-  delivery_note: string | null; closed_reason: string | null; open_exceptions: number; version: number;
+  delivery_note: string | null; closed_reason: string | null; open_exceptions: number; track_token: string; version: number;
   created_at: string; updated_at: string; sla_status: string; overdue: boolean; due_today: boolean;
   allowed_transitions: State[];
 }

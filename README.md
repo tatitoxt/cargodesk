@@ -101,6 +101,14 @@ explains how it got there.
   case-insensitively (409 `email_taken`), demoting or removing the last admin is
   rejected (409 `last_admin`), and deleting a member kills their sessions
   immediately. Non-admins see a read-only roster.
+- **Public tracking links**: every shipment carries an unguessable `track_token`
+  and a shareable `/track/{token}` page (`GET /api/v1/track/{token}`) showing
+  the customer-facing projection only — reference, origin → destination, state,
+  carrier and a sanitized timeline with no notes, quotes, owners or internal
+  fields. The detail page has a one-click "Copy tracking link", and
+  coordinators+ can rotate the token (`POST /api/v1/shipments/{id}/track-link`)
+  to invalidate previously shared links; unknown or rotated tokens uniformly
+  404 (no enumeration signal).
 - **Roles**: `viewer` (read-only), `coordinator` (operate), `admin` (operate + SLA policy).
 - **Multi-tenant**: every row is scoped by organization; other tenants' IDs return `404`.
 - **Optimistic concurrency**: mutations carry a `version`; stale writes get `409`

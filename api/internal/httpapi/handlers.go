@@ -993,3 +993,26 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+// handleTrack serves the unauthenticated public tracking view. Any lookup
+// failure returns the same 404 — the endpoint must not leak whether a token
+// exists.
+func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
+	sh, err := s.cfg.Store.TrackShipment(r.Context(), r.PathValue("token"))
+	if err != nil {
+		writeError(w, r, http.StatusNotFound, "not_found", "unknown tracking link", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, sh)
+}
+
+// handleRotateTrackLink invalidates the current public tracking link and
+// returns a fresh token.
+func (s *Server) handleRotateTrackLink(w http.ResponseWriter, r *http.Request) {
+	token, err := s.cfg.Store.RotateTrackToken(r.Context(), actor(r), r.PathValue("id"))
+	if err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"track_token": token})
+}

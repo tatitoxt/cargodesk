@@ -44,6 +44,7 @@ type Shipment struct {
 	DeliveryNote   *string        `json:"delivery_note"`
 	ClosedReason   *string        `json:"closed_reason"`
 	OpenExceptions int            `json:"open_exceptions"`
+	TrackToken     string         `json:"track_token"`
 	Version        int            `json:"version"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
@@ -111,7 +112,7 @@ const shipmentSelect = `SELECT s.id, s.reference, s.account_name, s.contact_labe
 	s.pickup_at, s.carrier, s.delivered_at,
 	s.received_by, s.delivery_note, s.closed_reason,
 	(SELECT count(*) FROM exceptions e WHERE e.organization_id = s.organization_id AND e.shipment_id = s.id AND e.resolved_at IS NULL),
-	s.version, s.created_at, s.updated_at
+	s.track_token, s.version, s.created_at, s.updated_at
 	FROM shipments s LEFT JOIN users u ON u.organization_id = s.organization_id AND u.id = s.owner_id`
 
 func scanShipment(r pgx.Row) (Shipment, error) {
@@ -123,7 +124,7 @@ func scanShipment(r pgx.Row) (Shipment, error) {
 		&sh.InTransitAt, &sh.TransitDueAt,
 		&sh.PickupAt, &sh.Carrier, &sh.DeliveredAt,
 		&sh.ReceivedBy, &sh.DeliveryNote, &sh.ClosedReason, &sh.OpenExceptions,
-		&sh.Version, &sh.CreatedAt, &sh.UpdatedAt)
+		&sh.TrackToken, &sh.Version, &sh.CreatedAt, &sh.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sh, ErrNotFound
 	}
@@ -289,13 +290,17 @@ func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShi
 		}
 		ref := fmt.Sprintf("%s-%d", prefix, n)
 		var id string
+		token, err := randomPassword()
+		if err != nil {
+			return err
+		}
 		err = tx.QueryRow(ctx, `INSERT INTO shipments (organization_id, reference, account_name, contact_label, origin,
 			destination, cargo_type, required_date, notes, priority, owner_id, next_action_at, next_action_note,
-			due_at, created_by, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16) RETURNING id`,
+			due_at, created_by, track_token, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17) RETURNING id`,
 			a.Org.ID, ref, in.AccountName, in.ContactLabel, in.Origin, in.Destination, in.CargoType, in.RequiredDate,
 			in.Notes, in.Priority, in.OwnerID, in.NextActionAt, in.NextActionNote,
-			due, a.UserID, now).Scan(&id)
+			due, a.UserID, token, now).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -829,4 +834,81 @@ func slackText(a Actor, e EventRecord) string {
 		b.WriteString(" — reason: " + *e.Reason)
 	}
 	return b.String()
+}
+
+// PublicShipment is the sanitized projection served by the unauthenticated
+// tracking endpoint. It deliberately drops internal fields (notes, owner,
+// quotes, exceptions, actor names) — only what a customer needs to see.
+type PublicShipment struct {
+	Organization string        `json:"organization"`
+	Reference    string        `json:"reference"`
+	Origin       string        `json:"origin"`
+	Destination  string        `json:"destination"`
+	CargoType    string        `json:"cargo_type"`
+	RequiredDate string        `json:"required_date"`
+	State        string        `json:"state"`
+	Carrier      *string       `json:"carrier"`
+	DeliveredAt  *time.Time    `json:"delivered_at"`
+	ReceivedBy   *string       `json:"received_by"`
+	Events       []PublicEvent `json:"events"`
+}
+
+type PublicEvent struct {
+	Action    string    `json:"action"`
+	FromState *string   `json:"from_state"`
+	ToState   *string   `json:"to_state"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TrackShipment resolves a public tracking token to the sanitized view.
+// Unknown or malformed tokens return ErrNotFound — the endpoint must not
+// distinguish them from real misses (no enumeration signal).
+func (s *Store) TrackShipment(ctx context.Context, token string) (PublicShipment, error) {
+	var out PublicShipment
+	var id string
+	err := s.pool.QueryRow(ctx, `SELECT s.id, o.name, s.reference, s.origin, s.destination, s.cargo_type,
+		to_char(s.required_date, 'YYYY-MM-DD'), s.state, s.carrier, s.delivered_at, s.received_by
+		FROM shipments s JOIN organizations o ON o.id = s.organization_id
+		WHERE s.track_token = $1`, token).
+		Scan(&id, &out.Organization, &out.Reference, &out.Origin, &out.Destination, &out.CargoType,
+			&out.RequiredDate, &out.State, &out.Carrier, &out.DeliveredAt, &out.ReceivedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return out, ErrNotFound
+	}
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT action, from_state, to_state, created_at FROM shipment_events
+		WHERE organization_id = (SELECT organization_id FROM shipments WHERE id = $1) AND shipment_id = $1
+		ORDER BY created_at`, id)
+	if err != nil {
+		return out, err
+	}
+	out.Events, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (PublicEvent, error) {
+		var e PublicEvent
+		err := r.Scan(&e.Action, &e.FromState, &e.ToState, &e.CreatedAt)
+		return e, err
+	})
+	return out, err
+}
+
+// RotateTrackToken regenerates a shipment's public tracking token, invalidating
+// previously shared links, and returns the new token.
+func (s *Store) RotateTrackToken(ctx context.Context, a Actor, id string) (string, error) {
+	if !domain.IsUUID(id) {
+		return "", ErrNotFound
+	}
+	token, err := randomPassword()
+	if err != nil {
+		return "", err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE shipments SET track_token = $3, updated_at = now()
+		WHERE organization_id = $1 AND id = $2`, a.Org.ID, id, token)
+	if err != nil {
+		return "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrNotFound
+	}
+	return token, nil
 }

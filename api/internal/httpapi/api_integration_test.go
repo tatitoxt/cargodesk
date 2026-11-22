@@ -1591,3 +1591,59 @@ func TestPasswordInvite(t *testing.T) {
 		t.Fatalf("demo login as invited: %d", r.status)
 	}
 }
+
+func TestPublicTracking(t *testing.T) {
+	e := newEnv(t, true)
+	admin := e.login(seed.ViewerA)
+	editor := e.login(seed.CoordinatorA)
+
+	created := editor.mustOK(201, "POST", "/api/v1/shipments", createBody("Tracked Co"))
+	id := created["id"].(string)
+	detail := editor.mustOK(200, "GET", "/api/v1/shipments/"+id, nil)
+	token, ok := detail["track_token"].(string)
+	if !ok || len(token) < 20 {
+		t.Fatalf("no track_token in detail: %v", detail)
+	}
+
+	// Unauthenticated view exposes the sanitized projection only.
+	pub := e.anon().mustOK(200, "GET", "/api/v1/track/"+token, nil)
+	if pub["reference"] != created["reference"] || pub["state"] != "new" {
+		t.Fatalf("bad public payload: %s", pub)
+	}
+	for _, secret := range []string{"notes", "owner", "quotes", "account_name", "track_token", "id"} {
+		if _, leaked := pub[secret]; leaked {
+			t.Fatalf("public tracking leaked %q: %s", secret, pub)
+		}
+	}
+	evs, _ := pub["events"].([]any)
+	if len(evs) == 0 {
+		t.Fatal("public tracking has no events")
+	}
+	ev := evs[0].(map[string]any)
+	if _, leaked := ev["actor"]; leaked {
+		t.Fatalf("public event leaked actor: %v", ev)
+	}
+
+	// Unknown/garbage tokens get the same 404 — no enumeration signal.
+	for _, bad := range []string{"nosuch", token + "x", token[:len(token)-2] + "zz"} {
+		if r := e.anon().do("GET", "/api/v1/track/"+bad, nil, nil); r.status != 404 {
+			t.Fatalf("token %q: got %d, want 404", bad, r.status)
+		}
+	}
+
+	// Viewers cannot rotate; editors can, and the old link dies.
+	if r := admin.do("POST", "/api/v1/shipments/"+id+"/track-link", nil, nil); r.status == 200 {
+		t.Fatal("viewer rotated a track link")
+	}
+	rotated := editor.mustOK(200, "POST", "/api/v1/shipments/"+id+"/track-link", nil)
+	newToken, _ := rotated["track_token"].(string)
+	if newToken == "" || newToken == token {
+		t.Fatalf("rotation returned no fresh token: %v", rotated)
+	}
+	if r := e.anon().do("GET", "/api/v1/track/"+token, nil, nil); r.status != 404 {
+		t.Fatalf("old token still resolves after rotation: %d", r.status)
+	}
+	if r := e.anon().do("GET", "/api/v1/track/"+newToken, nil, nil); r.status != 200 {
+		t.Fatalf("rotated token does not resolve: %d", r.status)
+	}
+}

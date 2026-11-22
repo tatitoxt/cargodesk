@@ -80,6 +80,8 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/shipments", s.editor(s.idempotent("create", s.handleCreate)))
 	m.HandleFunc("GET /api/v1/shipments/{id}", s.authed(s.handleGet))
 	m.HandleFunc("GET /api/v1/shipments/{id}/events", s.authed(s.handleEvents))
+	m.HandleFunc("POST /api/v1/shipments/{id}/track-link", s.editor(s.handleRotateTrackLink))
+	m.HandleFunc("GET /api/v1/track/{token}", s.handleTrack)
 	m.HandleFunc("POST /api/v1/shipments/{id}/transitions", s.editor(s.idempotent("transition", s.handleTransition)))
 	m.HandleFunc("POST /api/v1/shipments/{id}/events", s.editor(s.handleAddEvent))
 	m.HandleFunc("GET /api/v1/shipments/{id}/attachments", s.authed(s.handleListAttachments))

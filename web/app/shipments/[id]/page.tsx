@@ -22,6 +22,7 @@ function Detail({ id }: { id: string }) {
   const [users, setUsers] = useState<User[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [notFound, setNotFound] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -70,6 +71,33 @@ function Detail({ id }: { id: string }) {
         <StateBadge state={sh.state} /> <SLABadge status={sh.sla_status} />
         {sh.overdue && <> <span className="badge overdue">Overdue</span></>}
       </h1>
+      <p style={{ display: "flex", gap: 8 }}>
+        <button
+          type="button"
+          className="secondary"
+          data-testid="copy-track-link"
+          onClick={async () => {
+            await navigator.clipboard.writeText(`${location.origin}/track/${sh.track_token}`);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}
+        >
+          {copied ? "Copied!" : "Copy tracking link"}
+        </button>
+        {canEdit && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={async () => {
+              if (!confirm("Rotate the public tracking link? The previous link will stop working.")) return;
+              const r = await api<{ track_token: string }>(`/shipments/${id}/track-link`, { method: "POST" });
+              setSh({ ...sh, track_token: r.track_token });
+            }}
+          >
+            Rotate link
+          </button>
+        )}
+      </p>
       {error !== null && (
         <div>
           <ErrorBox error={error} />

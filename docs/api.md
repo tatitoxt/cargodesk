@@ -25,6 +25,8 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | POST | `/api/v1/shipments` | coordinator, admin | Create request. Supports `Idempotency-Key`. |
 | GET | `/api/v1/shipments/{id}` | any | Detail incl. quotes, open exceptions, SLA status. Other tenants' IDs → `404`. |
 | GET | `/api/v1/shipments/{id}/events` | any | Append-only timeline. |
+| POST | `/api/v1/shipments/{id}/track-link` | coordinator, admin | Rotates the public tracking token → `{"track_token": "…"}`; previously shared links stop resolving. |
+| GET | `/api/v1/track/{token}` | – | Unauthenticated public tracking view: reference, origin → destination, state, carrier and a sanitized event timeline (no notes, quotes, owners or internal data). Unknown or rotated tokens → `404`. Served by the web app at `/track/{token}`. |
 | POST | `/api/v1/shipments/{id}/transitions` | coordinator, admin | `{"to": "quoted", "version": 3, "reason": "…", "quote": {…}, "schedule": {…}, "evidence": {…}}`. Stale `version` → `409`. Supports `Idempotency-Key`. |
 | POST | `/api/v1/shipments/{id}/events` | coordinator, admin | Notes and exceptions: `{"kind": "note", "body": "…"}`, `{"kind": "exception", "version": 4, "exception_kind": "…", "reason": "…"}` or `{"kind": "exception_resolved", …}`. |
 | PATCH | `/api/v1/shipments/{id}/assignment` | coordinator, admin | Owner, priority, next action. Requires `version`. |
