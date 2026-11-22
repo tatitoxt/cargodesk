@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/tatitoxt/cargodesk/api/internal/domain"
@@ -136,4 +140,94 @@ func (s *Store) anotherAdminExists(ctx context.Context, orgID, excluding string)
 			WHERE organization_id = $1 AND role = 'admin' AND id <> $2)`,
 		orgID, excluding).Scan(&ok)
 	return ok, err
+}
+
+var (
+	// ErrBadCredentials is returned when password login fails for any reason.
+	ErrBadCredentials = errors.New("invalid email or password")
+	// ErrWeakPassword is returned when a new password does not meet the minimum.
+	ErrWeakPassword = errors.New("password must be at least 10 characters")
+)
+
+const minPasswordLen = 10
+
+func hashPassword(pw string) ([]byte, error) {
+	return bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+}
+
+func randomPassword() (string, error) {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// InviteUser creates a member with a random temporary password and returns the
+// plaintext once — it is never stored or returned again. The invited member
+// must set a new password on first sign-in.
+func (s *Store) InviteUser(ctx context.Context, a Actor, email, displayName string, role domain.Role) (User, string, error) {
+	u, err := s.CreateUser(ctx, a, email, displayName, role)
+	if err != nil {
+		return User{}, "", err
+	}
+	temp, err := randomPassword()
+	if err != nil {
+		return User{}, "", err
+	}
+	hash, err := hashPassword(temp)
+	if err != nil {
+		return User{}, "", err
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1`,
+		u.ID, hash); err != nil {
+		return User{}, "", err
+	}
+	return u, temp, nil
+}
+
+// LoginByPassword verifies an email/password pair and returns the user's id and
+// whether a password change is forced. Users without a password (seeded demo
+// users, OIDC-only members) and wrong credentials both yield ErrBadCredentials —
+// the error does not reveal which emails exist.
+func (s *Store) LoginByPassword(ctx context.Context, email, password string) (id string, mustChange bool, err error) {
+	var hash []byte
+	err = s.pool.QueryRow(ctx,
+		`SELECT id, password_hash, must_change_password FROM users WHERE email = $1`,
+		strings.ToLower(strings.TrimSpace(email))).Scan(&id, &hash, &mustChange)
+	if err != nil {
+		return "", false, ErrBadCredentials
+	}
+	if len(hash) == 0 || bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil {
+		return "", false, ErrBadCredentials
+	}
+	return id, mustChange, nil
+}
+
+// ChangePassword verifies the caller's current password and replaces it,
+// clearing the forced-change flag set by an invite.
+func (s *Store) ChangePassword(ctx context.Context, a Actor, current, next string) error {
+	if len(next) < minPasswordLen {
+		return ErrWeakPassword
+	}
+	if current == next {
+		return &domain.ValidationError{Fields: []domain.FieldError{{Field: "new_password", Message: "must differ from the current password"}}}
+	}
+	var hash []byte
+	err := s.pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1`, a.UserID).Scan(&hash)
+	if err != nil {
+		return err
+	}
+	if len(hash) == 0 || bcrypt.CompareHashAndPassword(hash, []byte(current)) != nil {
+		return ErrBadCredentials
+	}
+	nextHash, err := hashPassword(next)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1`,
+		a.UserID, nextHash)
+	return err
 }

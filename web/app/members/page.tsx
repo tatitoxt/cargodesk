@@ -15,6 +15,7 @@ function Members() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("viewer");
+  const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
   const isAdmin = me.role === "admin";
 
   function refresh() {
@@ -26,7 +27,10 @@ function Members() {
     e.preventDefault();
     setError(null);
     try {
-      await api("/users", { method: "POST", body: { email, display_name: name, role } });
+      const r = await api<{ user: User; temporary_password: string }>("/users/invite", {
+        method: "POST", body: { email, display_name: name, role },
+      });
+      setTempPassword({ email, password: r.temporary_password });
       setEmail("");
       setName("");
       setRole("viewer");
@@ -62,6 +66,16 @@ function Members() {
       <Nav />
       <h1>Members</h1>
       <p className="muted">People in {me.organization.name}. Removing a member ends their sessions.</p>
+      {tempPassword && (
+        <div className="card" role="status" aria-label="Temporary password">
+          <p>
+            <strong>{tempPassword.email}</strong> was invited. Share this temporary password — it is
+            shown once and must be replaced at first sign-in:
+          </p>
+          <p><code style={{ fontSize: "1.1em" }}>{tempPassword.password}</code></p>
+          <button className="secondary" onClick={() => setTempPassword(null)}>Done — I copied it</button>
+        </div>
+      )}
       {isAdmin ? (
         <form className="card row" onSubmit={invite} aria-label="Invite member">
           <label>

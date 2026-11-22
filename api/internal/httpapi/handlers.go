@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +65,12 @@ func (s *Server) handleDemoLogin(w http.ResponseWriter, r *http.Request) {
 // issueSession creates a session for userID, sets the cookie and answers with
 // the resolved actor — shared by the demo and OIDC sign-ins.
 func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID string) {
+	s.issueSessionWith(w, r, userID, nil)
+}
+
+// issueSessionWith behaves like issueSession but merges extra fields into the
+// JSON body (e.g. must_change_password after a password login).
+func (s *Server) issueSessionWith(w http.ResponseWriter, r *http.Request, userID string, extra map[string]any) {
 	token, err := s.cfg.Store.CreateSession(r.Context(), userID, s.now(), sessionTTL)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, r, http.StatusNotFound, "not_found", "unknown user", nil)
@@ -80,7 +87,24 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, userID str
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, a)
+	if len(extra) == 0 {
+		writeJSON(w, http.StatusOK, a)
+		return
+	}
+	var body map[string]any
+	raw, err := json.Marshal(a)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -896,4 +920,76 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- password invites ---
+
+// handleInvite creates a member with a random temporary password, returned once
+// in the response. The invited member must replace it on first sign-in.
+func (s *Server) handleInvite(w http.ResponseWriter, r *http.Request) {
+	a := actor(r)
+	if !a.Role.CanConfigure() {
+		writeError(w, r, http.StatusForbidden, "forbidden", "only admins can manage members", nil)
+		return
+	}
+	var in struct {
+		Email       string      `json:"email"`
+		DisplayName string      `json:"display_name"`
+		Role        domain.Role `json:"role"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	u, temp, err := s.cfg.Store.InviteUser(r.Context(), a, in.Email, in.DisplayName, in.Role)
+	if err != nil {
+		s.writeDomainError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"user": u, "temporary_password": temp})
+}
+
+// handlePasswordLogin signs a member in with email + password (members invited
+// with a temporary password). It answers the same session shape as demo login,
+// plus `must_change_password` so the UI can force a password change.
+func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	id, mustChange, err := s.cfg.Store.LoginByPassword(r.Context(), in.Email, in.Password)
+	if errors.Is(err, store.ErrBadCredentials) {
+		writeError(w, r, http.StatusUnauthorized, "bad_credentials", "invalid email or password", nil)
+		return
+	}
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	s.issueSessionWith(w, r, id, map[string]any{"must_change_password": mustChange})
+}
+
+// handleChangePassword lets the signed-in member replace their password.
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Current string `json:"current_password"`
+		Next    string `json:"new_password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	err := s.cfg.Store.ChangePassword(r.Context(), actor(r), in.Current, in.Next)
+	switch {
+	case errors.Is(err, store.ErrBadCredentials):
+		writeError(w, r, http.StatusUnauthorized, "bad_credentials", "current password is wrong", nil)
+	case errors.Is(err, store.ErrWeakPassword):
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", err.Error(),
+			map[string]any{"fields": []domain.FieldError{{Field: "new_password", Message: err.Error()}}})
+	case err != nil:
+		s.writeDomainError(w, r, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }

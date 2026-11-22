@@ -14,8 +14,13 @@ carries `X-Correlation-ID` (echoed from the request or generated). Errors use:
 | GET | `/api/v1/auth/demo-users` | – | Seeded synthetic users (only when `DEMO_AUTH=true`). |
 | POST | `/api/v1/auth/demo-login` | – | `{"user_id": "…"}` → sets an HttpOnly session cookie (12h). |
 | POST | `/api/v1/auth/logout` | any | Deletes the session. |
+| POST | `/api/v1/auth/password-login` | – | `{"email": "…", "password": "…"}` → session cookie; body carries `must_change_password` for invited users. Wrong credentials → `401 bad_credentials` (same for unknown email). |
 | GET | `/api/v1/me` | any | Current user, role and organization. |
+| POST | `/api/v1/me/password` | any | `{"current_password": "…", "new_password": "…"}` → `204`; wrong current → `401`, weak (under 10 chars or same) → `422`. Clears `must_change_password`. |
 | GET | `/api/v1/users` | any | Users of the caller's organization (owner picker). |
+| POST | `/api/v1/users/invite` | admin | `{"email": "…", "display_name": "…", "role": "…"}` → `201` with the user and a one-time `temporary_password`; the invitee must change it on first sign-in. Duplicate email → `409`. |
+| PATCH | `/api/v1/users/{id}` | admin | Change role/display name. Last-admin demotion → `409`. |
+| DELETE | `/api/v1/users/{id}` | admin | Removes the member and kills their sessions. Last admin → `409`. |
 | GET | `/api/v1/shipments` | any | Filters: `state`, `owner` (`<uuid>` or `none`), `overdue=true`, `due_today=true`, `q` (reference/account/origin/destination). |
 | POST | `/api/v1/shipments` | coordinator, admin | Create request. Supports `Idempotency-Key`. |
 | GET | `/api/v1/shipments/{id}` | any | Detail incl. quotes, open exceptions, SLA status. Other tenants' IDs → `404`. |

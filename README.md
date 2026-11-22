@@ -96,8 +96,8 @@ explains how it got there.
     runs the same pass synchronously.
 - **CSV export**: allow-listed columns only, with spreadsheet-formula escaping.
 - **Member management**: admins invite, re-role and remove organization members
-  from the `/members` page (backed by `POST /api/v1/users`,
-  `PATCH /api/v1/users/{id}` and `DELETE /api/v1/users/{id}`); emails are unique
+  from the `/members` page (`POST /api/v1/users/invite` issues a one-time
+  temporary password; `PATCH`/`DELETE /api/v1/users/{id}` re-role and remove); emails are unique
   case-insensitively (409 `email_taken`), demoting or removing the last admin is
   rejected (409 `last_admin`), and deleting a member kills their sessions
   immediately. Non-admins see a read-only roster.
@@ -219,7 +219,8 @@ E2E specs (`web/e2e/`):
   and delete.
 - Members: admin invites a member, changes their role and removes them; a
   duplicate email surfaces the API error; a coordinator sees the roster with no
-  member controls.
+  member controls; an invited member signs in with the temporary password and
+  is forced through the password-change page before reaching the board.
 
 ### Measured results (this repository, reproducible with the commands above)
 
@@ -262,8 +263,12 @@ No external API keys are used or required.
 - **Authentication is provisioned.** With OIDC configured, the SPA runs the
   Authorization Code + PKCE flow and posts the ID token to `/api/v1/auth/oidc`;
   users must still be seeded/invited by an admin (organization and role are not
-  taken from the token). Without OIDC, sign-in is the seeded user picker; there is no
-  password. Do not expose the demo to the internet.
+  taken from the token). Admins can also invite a member with a one-time
+  temporary password (`POST /api/v1/users/invite`); the invitee signs in with
+  email + password (`POST /api/v1/auth/password-login`) and is forced through a
+  password change (`POST /api/v1/me/password`, bcrypt, 10+ chars) before using
+  the app. Without OIDC, sign-in is the seeded user picker. Do not expose the
+  demo to the internet.
 - **Not validated with real users.** The workflow, SLA defaults and fields are
   assumptions from the spec, not findings from operators.
 - One currency per quote and no pricing logic; quotes are entered manually.
@@ -271,7 +276,7 @@ No external API keys are used or required.
   evidence is a generic attachment rather than a dedicated field.
 - Notifications cover outbound webhooks (HMAC-signed), Slack incoming webhooks
   and email (SMTP); no WhatsApp, maps/GPS, or customer portal.
-- Organizations are created by the seed only; members sign in with the demo or OIDC login, not by password invite yet.
+- Organizations are created by the seed only.
 - No load testing or security audit has been performed.
 
 ## Roadmap

@@ -1513,3 +1513,81 @@ func TestSlackNotifications(t *testing.T) {
 		t.Fatalf("DELETE slack: %d", r.status)
 	}
 }
+
+// Password invites: an admin invites a member, who signs in with the one-time
+// temporary password and is forced to replace it.
+func TestPasswordInvite(t *testing.T) {
+	e := newEnv(t, true)
+	viewer := e.login(seed.ViewerA)
+	admin := e.login(seed.AdminA)
+
+	if r := viewer.do("POST", "/api/v1/users/invite",
+		map[string]any{"email": "invited@cargodesk.example", "display_name": "Invited", "role": "coordinator"}, nil); r.status != 403 {
+		t.Fatalf("viewer invite: %d", r.status)
+	}
+	inv := admin.mustOK(201, "POST", "/api/v1/users/invite",
+		map[string]any{"email": "invited@cargodesk.example", "display_name": "Invited", "role": "coordinator"})
+	temp, _ := inv["temporary_password"].(string)
+	if temp == "" {
+		t.Fatalf("invite response missing temporary_password: %v", inv)
+	}
+	userID := inv["user"].(map[string]any)["id"].(string)
+
+	// Wrong credentials and unknown emails both get 401.
+	for _, body := range []map[string]any{
+		{"email": "invited@cargodesk.example", "password": "nope"},
+		{"email": "nobody@cargodesk.example", "password": temp},
+	} {
+		if r := e.anon().do("POST", "/api/v1/auth/password-login", body, nil); r.status != 401 {
+			t.Fatalf("bad login %v: %d", body, r.status)
+		}
+	}
+
+	// The temp password signs in and flags the forced change.
+	invited := e.anon()
+	logged := invited.do("POST", "/api/v1/auth/password-login",
+		map[string]any{"email": "invited@cargodesk.example", "password": temp}, nil)
+	if logged.status != 200 {
+		t.Fatalf("password login: %d %s", logged.status, logged.raw)
+	}
+	if logged.body["must_change_password"] != true {
+		t.Fatalf("must_change_password = %v", logged.body)
+	}
+	if r := invited.do("GET", "/api/v1/me", nil, nil); r.status != 200 {
+		t.Fatalf("me as invited member: %d", r.status)
+	}
+	if r := invited.do("POST", "/api/v1/me/password",
+		map[string]any{"current_password": "wrong", "new_password": "long-enough-secret"}, nil); r.status != 401 {
+		t.Fatalf("wrong current: %d", r.status)
+	}
+	if r := invited.do("POST", "/api/v1/me/password",
+		map[string]any{"current_password": temp, "new_password": "short"}, nil); r.status != 422 {
+		t.Fatalf("weak password: %d", r.status)
+	}
+	if r := invited.do("POST", "/api/v1/me/password",
+		map[string]any{"current_password": temp, "new_password": "long-enough-secret"}, nil); r.status != 204 {
+		t.Fatalf("change: %d %s", r.status, r.raw)
+	}
+
+	// Old password rejected, new password accepted without the flag.
+	if r := e.anon().do("POST", "/api/v1/auth/password-login",
+		map[string]any{"email": "invited@cargodesk.example", "password": temp}, nil); r.status != 401 {
+		t.Fatalf("old password still accepted: %d", r.status)
+	}
+	relogged := e.anon().do("POST", "/api/v1/auth/password-login",
+		map[string]any{"email": "invited@cargodesk.example", "password": "long-enough-secret"}, nil)
+	if relogged.status != 200 || relogged.body["must_change_password"] != false {
+		t.Fatalf("relogin: %d %v", relogged.status, relogged.body)
+	}
+
+	// Seeded users without a password cannot use the password endpoint.
+	if r := e.anon().do("POST", "/api/v1/auth/password-login",
+		map[string]any{"email": "carla.admin@cargodesk.example", "password": "whatever-secret"}, nil); r.status != 401 {
+		t.Fatalf("password-less user login: %d", r.status)
+	}
+
+	// Invited member can still sign in through the demo flow (same user row).
+	if r := e.anon().do("POST", "/api/v1/auth/demo-login", map[string]any{"user_id": userID}, nil); r.status != 200 {
+		t.Fatalf("demo login as invited: %d", r.status)
+	}
+}
