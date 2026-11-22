@@ -244,7 +244,7 @@ E2E specs (`web/e2e/`):
 - Go: 93 top-level tests and 92 subtests pass across 7 packages
   (`go test -v ./... | grep -cE '^\s*--- PASS'` → 185), including real-PostgreSQL
   integration tests in `internal/store` and `internal/httpapi`.
-- Playwright: 11 E2E tests pass in Chromium.
+- Playwright: 13 E2E tests pass in Chromium.
 
 ### CI
 
