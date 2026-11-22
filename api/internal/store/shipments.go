@@ -194,6 +194,8 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 		Scan(&url, &events, &emails, &slackURL, &waPNID, &waRcpt, &waAPI); err != nil {
 		return 0, err
 	}
+	// webhook_events only filters the webhook channel; email, Slack and
+	// WhatsApp receive every event.
 	subscribed := len(events) == 0
 	for _, action := range events {
 		if action == e.Action {
@@ -201,7 +203,7 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 			break
 		}
 	}
-	if len(emails) > 0 && subscribed {
+	if len(emails) > 0 {
 		payload, err := json.Marshal(map[string]any{
 			"event":          e.Action,
 			"shipment_id":    e.ShipmentID,
@@ -223,7 +225,7 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 			return 0, err
 		}
 	}
-	if slackURL != nil && *slackURL != "" && subscribed {
+	if slackURL != nil && *slackURL != "" {
 		// Slack incoming webhooks expect {"text": ...}; the payload is frozen
 		// here so the delivery log shows exactly what was posted.
 		text := slackText(a, e)
@@ -237,7 +239,7 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 			return 0, err
 		}
 	}
-	if waPNID != nil && *waPNID != "" && len(waRcpt) > 0 && subscribed {
+	if waPNID != nil && *waPNID != "" && len(waRcpt) > 0 {
 		// WhatsApp Cloud API: POST {api}/{phone_number_id}/messages per
 		// recipient. Endpoint and message text are frozen here; the token is
 		// read live at dispatch so rotation applies to queued rows.
@@ -250,10 +252,14 @@ func insertEvent(ctx context.Context, q querier, a Actor, e EventRecord) (int64,
 		if err != nil {
 			return 0, err
 		}
-		if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
-			(organization_id, event_id, action, channel, url, rcpt, payload) VALUES ($1, $2, $3, 'whatsapp', $4, $5, $6)`,
-			a.Org.ID, id, e.Action, endpoint, waRcpt, payload); err != nil {
-			return 0, err
+		// One row per recipient so a retry never re-sends to recipients
+		// that already got the message.
+		for _, rcpt := range waRcpt {
+			if _, err := q.Exec(ctx, `INSERT INTO notification_deliveries
+				(organization_id, event_id, action, channel, url, rcpt, payload) VALUES ($1, $2, $3, 'whatsapp', $4, $5, $6)`,
+				a.Org.ID, id, e.Action, endpoint, []string{rcpt}, payload); err != nil {
+				return 0, err
+			}
 		}
 	}
 	if url != nil && *url != "" && subscribed {

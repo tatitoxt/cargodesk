@@ -927,6 +927,14 @@ func (s *Server) handlePutWhatsApp(w http.ResponseWriter, r *http.Request) {
 				"api_url must be a full https URL", map[string]any{"api_url": "https_required"})
 			return
 		}
+		// Arbitrary hosts would let an admin aim server-side POSTs (with the
+		// access token) at internal services; only Meta's Graph API is allowed
+		// unless the operator opts in.
+		if !s.cfg.AllowCustomWhatsAppAPI && u.Hostname() != "graph.facebook.com" {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_failed",
+				"api_url must be on graph.facebook.com", map[string]any{"api_url": "host_not_allowed"})
+			return
+		}
 	}
 	if err := s.cfg.Store.SetWhatsApp(r.Context(), a, in.PhoneNumberID, in.APIURL, in.Recipients, in.Token); err != nil {
 		s.internal(w, r, err)

@@ -34,6 +34,17 @@ type Dispatcher struct {
 	Sign func(payload []byte, secret string) string
 }
 
+// NewHTTPClient never follows redirects: a 3xx would turn the POST into a GET
+// and drop the payload, so it is recorded as a failed attempt instead.
+func NewHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // Run loops until ctx is cancelled. Errors in one batch are logged, not fatal.
 func (d *Dispatcher) Run(ctx context.Context) {
 	if d.Interval <= 0 {
@@ -43,7 +54,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		d.Batch = 20
 	}
 	if d.Client == nil {
-		d.Client = &http.Client{Timeout: 10 * time.Second}
+		d.Client = NewHTTPClient()
 	}
 	if d.Sign == nil {
 		d.Sign = func(payload []byte, secret string) string {
@@ -132,7 +143,7 @@ func (d *Dispatcher) whatsapp(ctx context.Context, del store.Delivery) error {
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return fmt.Errorf("whatsapp api returned %d for %s", resp.StatusCode, rcpt)
 		}
 		lastCode = resp.StatusCode
@@ -180,7 +191,7 @@ func (d *Dispatcher) post(ctx context.Context, del store.Delivery) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)
 	}
 	return d.Store.MarkDelivered(ctx, del.ID, resp.StatusCode)

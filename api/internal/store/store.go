@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -245,7 +246,7 @@ func (s *Store) EmailRecipients(ctx context.Context, a Actor) ([]string, error) 
 // Delivery is a queued outbound notification (webhook POST or email).
 type Delivery struct {
 	ID        int64
-	EventID   int64
+	EventID   *int64 // nil for "send test" pings
 	Channel   string
 	URL       string
 	Rcpt      []string
@@ -256,10 +257,14 @@ type Delivery struct {
 
 // DueDeliveries claims up to n pending deliveries whose attempt is due.
 func (s *Store) DueDeliveries(ctx context.Context, n int) ([]Delivery, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, event_id, channel, coalesce(url, ''), rcpt, payload, attempts, created_at
-		FROM notification_deliveries
-		WHERE delivered_at IS NULL AND next_attempt_at <= now() AND attempts < 8
-		ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, n)
+	// Claim rows by pushing next_attempt_at out by a lease, so a second
+	// dispatcher (another API replica) skips them while they are in flight.
+	// MarkDelivered / RetryDelivery overwrite the lease.
+	rows, err := s.pool.Query(ctx, `UPDATE notification_deliveries SET next_attempt_at = now() + interval '5 minutes'
+		WHERE id IN (SELECT id FROM notification_deliveries
+			WHERE delivered_at IS NULL AND next_attempt_at <= now() AND attempts < 8
+			ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED)
+		RETURNING id, event_id, channel, coalesce(url, ''), rcpt, payload, attempts, created_at`, n)
 	if err != nil {
 		return nil, err
 	}
@@ -272,6 +277,7 @@ func (s *Store) DueDeliveries(ctx context.Context, n int) ([]Delivery, error) {
 		}
 		out = append(out, d)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, rows.Err()
 }
 

@@ -44,66 +44,88 @@ func (m *SMTPMailer) Send(ctx context.Context, to []string, subject, body string
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
 		m.From, strings.Join(to, ", "), subject, body))
 
-	if m.TLS {
-		c, err := m.tlsClient(ctx, addr)
-		if err != nil {
-			return err
-		}
-		defer c.Close()
+	if m.sendMail != nil {
+		var auth smtp.Auth
 		if m.User != "" {
-			if err := c.Auth(smtp.PlainAuth("", m.User, m.Pass, m.Host)); err != nil {
-				return fmt.Errorf("smtp auth: %w", err)
-			}
+			auth = smtp.PlainAuth("", m.User, m.Pass, m.Host)
 		}
-		if err := c.Mail(m.From); err != nil {
-			return err
-		}
-		for _, rcpt := range to {
-			if err := c.Rcpt(rcpt); err != nil {
-				return err
-			}
-		}
-		w, err := c.Data()
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(msg); err != nil {
-			return err
-		}
-		if err := w.Close(); err != nil {
-			return err
-		}
-		return c.Quit()
+		return m.sendMail(addr, auth, m.From, to, msg)
 	}
-
-	sendMail := m.sendMail
-	if sendMail == nil {
-		sendMail = smtp.SendMail
+	c, err := m.client(ctx, addr)
+	if err != nil {
+		return err
 	}
-	var auth smtp.Auth
+	defer c.Close()
 	if m.User != "" {
-		auth = smtp.PlainAuth("", m.User, m.Pass, m.Host)
+		if err := c.Auth(smtp.PlainAuth("", m.User, m.Pass, m.Host)); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
 	}
-	return sendMail(addr, auth, m.From, to, msg)
+	if err := c.Mail(m.From); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
 
-func (m *SMTPMailer) tlsClient(ctx context.Context, addr string) (*smtp.Client, error) {
-	if m.dialTLS != nil {
+// client dials the server (implicit TLS, or plain + STARTTLS when offered)
+// and bounds the whole SMTP conversation with a connection deadline, so a
+// stalled server cannot block the delivery queue.
+func (m *SMTPMailer) client(ctx context.Context, addr string) (*smtp.Client, error) {
+	if m.TLS && m.dialTLS != nil {
 		return m.dialTLS(ctx, addr)
 	}
-	d := &tls.Dialer{Config: &tls.Config{ServerName: m.Host, MinVersion: tls.VersionTLS12}}
-	if m.Timeout > 0 {
-		d.NetDialer = &net.Dialer{Timeout: m.Timeout}
+	timeout := m.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	deadline := time.Now().Add(timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	nd := &net.Dialer{Timeout: timeout}
+	tlsCfg := &tls.Config{ServerName: m.Host, MinVersion: tls.VersionTLS12}
+	var conn net.Conn
+	var err error
+	if m.TLS {
+		conn, err = (&tls.Dialer{NetDialer: nd, Config: tlsCfg}).DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = nd.DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("smtp tls dial: %w", err)
+		return nil, fmt.Errorf("smtp dial: %w", err)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, err
 	}
 	host, _, _ := net.SplitHostPort(addr)
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
 		conn.Close()
 		return nil, err
+	}
+	if !m.TLS {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(tlsCfg); err != nil {
+				c.Close()
+				return nil, fmt.Errorf("smtp starttls: %w", err)
+			}
+		}
 	}
 	return c, nil
 }

@@ -1554,6 +1554,11 @@ func TestWhatsAppChannel(t *testing.T) {
 		"token": "tok", "api_url": "http://insecure.local"}, nil); r.status != 422 {
 		t.Fatalf("http api_url: %d", r.status)
 	}
+	if r := admin.do("PUT", "/api/v1/settings/whatsapp", map[string]any{
+		"phone_number_id": "123456789", "recipients": []string{"+5491100000000"},
+		"token": "tok", "api_url": "https://internal.example/admin"}, nil); r.status != 422 {
+		t.Fatalf("non-Meta api_url: %d", r.status)
+	}
 
 	// Configure via the store so api_url can point at the local http sink.
 	st := store.New(e.pool)
@@ -1572,15 +1577,26 @@ func TestWhatsAppChannel(t *testing.T) {
 
 	// A shipment event enqueues a whatsapp delivery at {api}/{pnid}/messages.
 	coord.mustOK(201, "POST", "/api/v1/shipments", createBody("WhatsApp Account"))
-	var channel, endpoint string
-	var rcpt []string
-	if err := e.pool.QueryRow(t.Context(),
-		`SELECT channel, url, rcpt FROM notification_deliveries ORDER BY id DESC LIMIT 1`).
-		Scan(&channel, &endpoint, &rcpt); err != nil {
+	// One delivery row per recipient, so retries never re-send to the others.
+	rows, err := e.pool.Query(t.Context(),
+		`SELECT channel, url, rcpt FROM notification_deliveries WHERE channel = 'whatsapp' ORDER BY id`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if channel != "whatsapp" || endpoint != receiver.URL+"/555123456/messages" || len(rcpt) != 2 {
-		t.Fatalf("delivery channel=%s url=%s rcpt=%v", channel, endpoint, rcpt)
+	var waRows int
+	for rows.Next() {
+		var channel, endpoint string
+		var rcpt []string
+		if err := rows.Scan(&channel, &endpoint, &rcpt); err != nil {
+			t.Fatal(err)
+		}
+		if endpoint != receiver.URL+"/555123456/messages" || len(rcpt) != 1 {
+			t.Fatalf("delivery channel=%s url=%s rcpt=%v", channel, endpoint, rcpt)
+		}
+		waRows++
+	}
+	if waRows != 2 {
+		t.Fatalf("whatsapp delivery rows = %d, want 2", waRows)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1797,5 +1813,47 @@ func TestMemberHardening(t *testing.T) {
 	r := e.login(seed.ViewerA).do("GET", "/api/v1/settings/slack", nil, nil)
 	if r.status != 200 || r.body["url"] != nil || r.body["configured"] != true {
 		t.Fatalf("viewer slack view: %d %s", r.status, r.raw)
+	}
+}
+
+// A "send test" ping (no event row) is dispatched, and a redirecting endpoint
+// is recorded as a failed attempt rather than followed or marked delivered.
+func TestWebhookTestPingAndRedirect(t *testing.T) {
+	e := newEnv(t, true)
+	admin := e.login(seed.AdminA)
+	var hits atomic.Int32
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(sink.Close)
+	st := store.New(e.pool)
+	actor, err := st.ActorByUserID(t.Context(), seed.AdminA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWebhook(t.Context(), actor, sink.URL, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	admin.mustOK(202, "POST", "/api/v1/settings/webhook/test", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	go (&notify.Dispatcher{Store: st, Interval: 20 * time.Millisecond,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Run(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr *string
+	var delivered bool
+	for time.Now().Before(deadline) {
+		if err := e.pool.QueryRow(t.Context(), `SELECT last_error, delivered_at IS NOT NULL FROM notification_deliveries
+			WHERE action = 'webhook_test'`).Scan(&lastErr, &delivered); err != nil {
+			t.Fatal(err)
+		}
+		if lastErr != nil || delivered {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if delivered || lastErr == nil || !strings.Contains(*lastErr, "302") || hits.Load() != 1 {
+		t.Fatalf("redirect: delivered=%v last_error=%v hits=%d", delivered, lastErr, hits.Load())
 	}
 }

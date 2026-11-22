@@ -45,6 +45,8 @@ type Config struct {
 	SignupEnabled bool
 	// TrustProxy uses X-Forwarded-For for rate-limit keys (API behind the web proxy).
 	TrustProxy bool
+	// AllowCustomWhatsAppAPI permits api_url hosts other than graph.facebook.com.
+	AllowCustomWhatsAppAPI bool
 }
 
 type Server struct {

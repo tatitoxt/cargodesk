@@ -108,7 +108,8 @@ func serve(ctx context.Context, log *slog.Logger) error {
 		api := httpapi.New(httpapi.Config{Store: st, Logger: log, DemoAuth: demo, SecureCookie: env("SECURE_COOKIE", "false") == "true",
 			AttachmentsDir: env("ATTACHMENTS_DIR", "data/attachments"), MaxAttachmentBytes: maxAtt, OIDCVerifier: oidc,
 			EmailEnabled: mailer != nil, SignupEnabled: env("SIGNUP_ENABLED", "false") == "true",
-			TrustProxy: env("TRUST_PROXY", "false") == "true"})
+			TrustProxy:             env("TRUST_PROXY", "false") == "true",
+			AllowCustomWhatsAppAPI: env("WHATSAPP_ALLOW_CUSTOM_API", "false") == "true"})
 		srv := &http.Server{
 			Addr:              env("ADDR", ":8080"),
 			Handler:           api,
