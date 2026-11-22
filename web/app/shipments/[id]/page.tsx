@@ -191,6 +191,7 @@ function describe(ev: TimelineEvent, userName: (id: unknown) => string): string 
       ).join("; ");
     }
     case "note_added": return "Note";
+    case "track_link_rotated": return "Public tracking link rotated";
     case "exception_opened": return `Exception opened (${ev.data?.kind})`;
     case "exception_resolved": return "Exception resolved";
     default: return ev.action;

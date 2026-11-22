@@ -161,20 +161,22 @@ func runSeed(ctx context.Context, log *slog.Logger, args []string) error {
 			return err
 		}
 		if n > 0 {
-			// seed.Run commits organizations before users, so an interrupted
-			// seed leaves organizations without users — a marker on
-			// organizations alone would then report "seeded" forever.
-			var u int
-			if err := st.Pool().QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&u); err != nil {
+			// seed.Run commits step by step; only the marker written after
+			// the last step proves the fixtures are complete.
+			var done bool
+			if err := st.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM seed_runs)`).Scan(&done); err != nil {
 				return err
 			}
-			if u == 0 {
-				return fmt.Errorf("database is partially seeded (%d organizations, no users); rerun with -reset", n)
+			if !done {
+				return fmt.Errorf("database is partially seeded (%d organizations, no completion marker); rerun with -reset", n)
 			}
 			log.Info("database already seeded; use -reset to reload")
 			return nil
 		}
 		if err := seed.Run(ctx, st.Pool(), time.Now()); err != nil {
+			return err
+		}
+		if _, err := st.Pool().Exec(ctx, `INSERT INTO seed_runs (completed_at) VALUES (now())`); err != nil {
 			return err
 		}
 		log.Info("synthetic demo data loaded")

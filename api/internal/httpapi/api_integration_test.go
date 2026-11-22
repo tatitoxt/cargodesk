@@ -1863,3 +1863,38 @@ func TestWebhookTestPingAndRedirect(t *testing.T) {
 		t.Fatalf("redirect: delivered=%v last_error=%v hits=%d", delivered, lastErr, hits.Load())
 	}
 }
+
+func TestViewValidationAndListMetadata(t *testing.T) {
+	e := newEnv(t, true)
+	coord := e.login(seed.CoordinatorA)
+	for _, f := range []map[string]string{{"state": "bogus"}, {"due": "tomorrow"}, {"owner": "someone"}, {"overdue": "maybe"}} {
+		if r := coord.do("POST", "/api/v1/views", map[string]any{"name": "Bad", "filters": f}, nil); r.status != 422 {
+			t.Fatalf("view filters %v: %d", f, r.status)
+		}
+	}
+	// 60 accented characters is within the limit (120 bytes).
+	coord.mustOK(201, "POST", "/api/v1/views", map[string]any{"name": strings.Repeat("é", 60), "filters": map[string]string{"state": "new,quoted"}})
+	if r := coord.do("DELETE", "/api/v1/views/not-a-uuid", nil, nil); r.status != 404 {
+		t.Fatalf("malformed view id: %d", r.status)
+	}
+	if list := coord.mustOK(200, "GET", "/api/v1/shipments", nil); list["limit"] != float64(200) {
+		t.Fatalf("default limit reported as %v", list["limit"])
+	}
+}
+
+func TestTrackLinkRotationIsAudited(t *testing.T) {
+	e := newEnv(t, true)
+	coord := e.login(seed.CoordinatorA)
+	id := coord.mustOK(201, "POST", "/api/v1/shipments", createBody("Rotate Co"))["id"].(string)
+	coord.mustOK(200, "POST", "/api/v1/shipments/"+id+"/track-link", nil)
+	ev := coord.mustOK(200, "GET", "/api/v1/shipments/"+id+"/events", nil)
+	found := false
+	for _, x := range ev["events"].([]any) {
+		if x.(map[string]any)["action"] == "track_link_rotated" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no track_link_rotated event: %v", ev)
+	}
+}

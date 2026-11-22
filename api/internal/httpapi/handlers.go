@@ -198,7 +198,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "count": len(items), "total": total,
-		"limit": f.Limit, "offset": f.Offset,
+		"limit": store.EffectiveLimit(f.Limit), "offset": f.Offset,
 		"now": now, "timezone": a.Org.Timezone,
 	})
 }
@@ -440,6 +440,23 @@ func (s *Server) handlePutSLA(w http.ResponseWriter, r *http.Request) {
 	if in.Hours == nil && in.ScheduleHours == nil && in.TransitHours == nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_failed", "hours, schedule_hours or transit_hours is required",
 			map[string]any{"fields": []domain.FieldError{{Field: "hours", Message: "at least one policy is required"}}})
+		return
+	}
+	// Validate every stage before writing any, so a bad later stage cannot
+	// leave earlier ones half-applied.
+	var fields []domain.FieldError
+	for _, st := range []struct {
+		field string
+		p     *sla.Policy
+	}{{"hours", in.Hours}, {"schedule_hours", in.ScheduleHours}, {"transit_hours", in.TransitHours}} {
+		if st.p != nil {
+			if err := st.p.Validate(); err != nil {
+				fields = append(fields, domain.FieldError{Field: st.field, Message: err.Error()})
+			}
+		}
+	}
+	if len(fields) > 0 {
+		s.writeDomainError(w, r, &domain.ValidationError{Fields: fields})
 		return
 	}
 	if in.Hours != nil {
@@ -1115,7 +1132,7 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 // handleRotateTrackLink invalidates the current public tracking link and
 // returns a fresh token.
 func (s *Server) handleRotateTrackLink(w http.ResponseWriter, r *http.Request) {
-	token, err := s.cfg.Store.RotateTrackToken(r.Context(), actor(r), r.PathValue("id"))
+	token, err := s.cfg.Store.RotateTrackToken(r.Context(), actor(r), r.PathValue("id"), correlationID(r))
 	if err != nil {
 		s.writeDomainError(w, r, err)
 		return

@@ -294,6 +294,14 @@ func strp(s string) *string {
 	return &s
 }
 
+// EffectiveLimit is the page size ListShipments applies (default 200, max 500).
+func EffectiveLimit(limit int) int {
+	if limit <= 0 || limit > 500 {
+		return 200
+	}
+	return limit
+}
+
 // CreateShipment inserts a request in state "new" and its "created" event.
 func (s *Store) CreateShipment(ctx context.Context, a Actor, in domain.CreateShipmentInput, now time.Time, corr string) (Shipment, error) {
 	var out Shipment
@@ -414,10 +422,7 @@ func (s *Store) ListShipments(ctx context.Context, a Actor, f ListFilter, now ti
 		"SELECT count(*) FROM shipments s WHERE "+strings.Join(where, " AND "), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	limit := f.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 200
-	}
+	limit := EffectiveLimit(f.Limit)
 	offset := max(f.Offset, 0)
 	// ORDER BY ends in a unique tiebreaker (id) so pages are stable under
 	// offset paging and concurrent inserts.
@@ -909,6 +914,7 @@ func (s *Store) TrackShipment(ctx context.Context, token string) (PublicShipment
 	}
 	rows, err := s.pool.Query(ctx, `SELECT action, from_state, to_state, created_at FROM shipment_events
 		WHERE organization_id = (SELECT organization_id FROM shipments WHERE id = $1) AND shipment_id = $1
+		  AND action NOT IN ('attachment_added', 'attachment_removed', 'track_link_rotated')
 		ORDER BY created_at`, id)
 	if err != nil {
 		return out, err
@@ -923,7 +929,7 @@ func (s *Store) TrackShipment(ctx context.Context, token string) (PublicShipment
 
 // RotateTrackToken regenerates a shipment's public tracking token, invalidating
 // previously shared links, and returns the new token.
-func (s *Store) RotateTrackToken(ctx context.Context, a Actor, id string) (string, error) {
+func (s *Store) RotateTrackToken(ctx context.Context, a Actor, id, corr string) (string, error) {
 	if !domain.IsUUID(id) {
 		return "", ErrNotFound
 	}
@@ -931,13 +937,21 @@ func (s *Store) RotateTrackToken(ctx context.Context, a Actor, id string) (strin
 	if err != nil {
 		return "", err
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE shipments SET track_token = $3, updated_at = now()
-		WHERE organization_id = $1 AND id = $2`, a.Org.ID, id, token)
+	err = s.tx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE shipments SET track_token = $3, updated_at = now()
+			WHERE organization_id = $1 AND id = $2`, a.Org.ID, id, token)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		_, err = insertEvent(ctx, tx, a, EventRecord{ShipmentID: id, Action: "track_link_rotated",
+			CorrelationID: corr, At: time.Now().UTC()})
+		return err
+	})
 	if err != nil {
 		return "", err
-	}
-	if tag.RowsAffected() == 0 {
-		return "", ErrNotFound
 	}
 	return token, nil
 }

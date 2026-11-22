@@ -27,7 +27,7 @@ type PublicShipment = {
 
 const ACTION_LABELS: Record<string, string> = {
   created: "Shipment created",
-  transition: "Status updated",
+  transitioned: "Status updated",
   assigned: "Assigned",
   note_added: "Note",
   exception_opened: "Issue reported",

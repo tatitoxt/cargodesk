@@ -99,7 +99,7 @@ func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 // filter to. Keep in sync with shipment_events_action_check.
 var WebhookActions = []string{
 	"created", "transitioned", "assigned", "note_added",
-	"exception_opened", "exception_resolved", "attachment_added", "attachment_removed",
+	"exception_opened", "exception_resolved", "attachment_added", "attachment_removed", "track_link_rotated",
 }
 
 // SetWebhook updates the org's notification webhook. Empty URL disables it.
@@ -503,6 +503,16 @@ func (s *Store) SetBusinessCalendar(ctx context.Context, a Actor, c sla.Calendar
 	}
 	if c.Holidays == nil {
 		c.Holidays = []string{}
+	}
+	// With per-day windows the shared columns are unused, but the table's
+	// CHECKs still apply: derive them from the windows.
+	if len(c.Windows) > 0 {
+		c.Days, c.StartMinute, c.EndMinute = nil, 1440, 0
+		for _, w := range c.Windows {
+			c.Days = append(c.Days, w.Day)
+			c.StartMinute = min(c.StartMinute, w.StartMinute)
+			c.EndMinute = max(c.EndMinute, w.EndMinute)
+		}
 	}
 	days := make([]int16, len(c.Days))
 	for i, d := range c.Days {

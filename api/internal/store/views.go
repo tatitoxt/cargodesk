@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/tatitoxt/cargodesk/api/internal/workflow"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -29,6 +32,32 @@ type SavedView struct {
 }
 
 // ValidateViewFilters rejects filter keys/values the board does not understand.
+// viewFilterValueProblem applies the same rules the board's query parser
+// does, so a saved view can always be opened.
+func viewFilterValueProblem(k, v string) string {
+	switch k {
+	case "state":
+		for _, st := range strings.Split(v, ",") {
+			if !workflow.State(strings.TrimSpace(st)).Valid() {
+				return "unknown state " + strconv.Quote(st)
+			}
+		}
+	case "owner":
+		if v != "me" && v != "none" && !domain.IsUUID(v) {
+			return "must be me, none or a user id"
+		}
+	case "overdue":
+		if _, err := strconv.ParseBool(v); err != nil {
+			return "must be true or false"
+		}
+	case "due":
+		if v != "today" {
+			return `must be "today"`
+		}
+	}
+	return ""
+}
+
 func ValidateViewFilters(filters map[string]string) error {
 	fields := []domain.FieldError{}
 	switch {
@@ -40,8 +69,10 @@ func ValidateViewFilters(filters map[string]string) error {
 		for k, v := range filters {
 			if !ViewFilterKeys[k] {
 				fields = append(fields, domain.FieldError{Field: "filters." + k, Message: "unknown filter key"})
-			} else if len(v) == 0 || len(v) > 200 {
+			} else if n := utf8.RuneCountInString(v); n == 0 || n > 200 {
 				fields = append(fields, domain.FieldError{Field: "filters." + k, Message: "value must be 1-200 characters"})
+			} else if msg := viewFilterValueProblem(k, v); msg != "" {
+				fields = append(fields, domain.FieldError{Field: "filters." + k, Message: msg})
 			}
 		}
 	}
@@ -77,7 +108,7 @@ func (s *Store) ListViews(ctx context.Context, a Actor) ([]SavedView, error) {
 
 func (s *Store) CreateView(ctx context.Context, a Actor, name string, filters map[string]string, now time.Time) (SavedView, error) {
 	name = strings.TrimSpace(name)
-	if len(name) == 0 || len(name) > 60 {
+	if n := utf8.RuneCountInString(name); n == 0 || n > 60 {
 		return SavedView{}, &domain.ValidationError{Fields: []domain.FieldError{
 			{Field: "name", Message: "must be 1-60 characters"},
 		}}
@@ -104,6 +135,9 @@ func (s *Store) CreateView(ctx context.Context, a Actor, name string, filters ma
 }
 
 func (s *Store) DeleteView(ctx context.Context, a Actor, id string) error {
+	if !domain.IsUUID(id) {
+		return ErrNotFound
+	}
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM saved_views WHERE organization_id = $1 AND id = $2`, a.Org.ID, id)
 	if err != nil {
