@@ -100,4 +100,3 @@ func TestSignupRateLimit(t *testing.T) {
 		t.Fatalf("expected some 429s after limit, got %v", statuses)
 	}
 }
-
