@@ -1,0 +1,61 @@
+# Local demo: PostgreSQL + Go API + Next.js UI with synthetic seed data.
+# Demo sign-in only (DEMO_AUTH=true); bound to localhost. Not for production.
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: cargodesk
+      POSTGRES_PASSWORD: cargodesk
+      POSTGRES_DB: cargodesk
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cargodesk"]
+      interval: 2s
+      retries: 30
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  seed:
+    build: ./api
+    command: ["seed"]
+    environment:
+      DATABASE_URL: postgres://cargodesk:cargodesk@db:5432/cargodesk?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: ./api
+    command: ["serve"]
+    environment:
+      DATABASE_URL: postgres://cargodesk:cargodesk@db:5432/cargodesk?sslmode=disable
+      DEMO_AUTH: "true"
+      SIGNUP_ENABLED: "true"
+      TRUST_PROXY: "true"
+      ADDR: ":8080"
+      ATTACHMENTS_DIR: /data/attachments
+    volumes:
+      - attachments:/data/attachments
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      retries: 30
+
+  web:
+    build:
+      context: ./web
+      args:
+        API_URL: http://api:8080
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  attachments:
